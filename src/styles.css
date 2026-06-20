@@ -60,8 +60,13 @@ button:focus-visible {
   margin: 0 auto;
   padding: max(12px, env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
   display: grid;
-  grid-template-rows: auto auto minmax(300px, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(300px, 1fr) auto auto auto;
   gap: 10px;
+}
+
+.shell.is-performance {
+  grid-template-rows: auto auto minmax(380px, 1fr) auto auto;
+  max-width: 640px;
 }
 
 .hero {
@@ -110,6 +115,24 @@ h1 {
   font-weight: 900;
   text-align: center;
   box-shadow: 0 0 28px rgba(34, 211, 238, 0.18);
+}
+
+.hero-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.hero-actions button {
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(103, 232, 249, 0.26);
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, 0.22), rgba(244, 114, 182, 0.16)),
+    rgba(15, 23, 42, 0.86);
+  color: #e0f2fe;
+  font-size: 0.74rem;
+  box-shadow: 0 0 22px rgba(34, 211, 238, 0.12);
 }
 
 .pattern-strip {
@@ -191,11 +214,21 @@ h1 {
     0 0 42px rgba(34, 211, 238, 0.12);
 }
 
+.shell.is-performance .playfield-wrap,
+.shell.is-performance .playfield {
+  min-height: clamp(380px, 56dvh, 640px);
+}
+
 .playfield {
   display: block;
   width: 100%;
   height: 100%;
   min-height: clamp(300px, 46dvh, 520px);
+  touch-action: none;
+}
+
+.playfield.is-dragging-pad {
+  cursor: grabbing;
 }
 
 .scanline {
@@ -231,6 +264,27 @@ h1 {
 .beat-grid span.is-active {
   background: #67e8f9;
   box-shadow: 0 0 14px rgba(34, 211, 238, 0.72);
+}
+
+.effect-readout {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 154px;
+  padding: 9px 12px;
+  border: 1px solid rgba(248, 250, 252, 0.22);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.72);
+  color: #f8fafc;
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-align: center;
+  text-shadow: 0 0 18px rgba(34, 211, 238, 0.75);
+  box-shadow:
+    0 0 28px rgba(34, 211, 238, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  pointer-events: none;
 }
 
 .status-panel {
@@ -273,6 +327,10 @@ h1 {
 
 .midi-lab {
   min-width: 0;
+}
+
+.shell.is-performance .midi-lab {
+  display: none;
 }
 
 .lab-panel {
@@ -465,7 +523,7 @@ h1 {
 
 .controls {
   position: sticky;
-  bottom: env(safe-area-inset-bottom);
+  bottom: max(8px, env(safe-area-inset-bottom));
   z-index: 5;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -492,11 +550,18 @@ h1 {
     0 8px 22px rgba(0, 0, 0, 0.24);
 }
 
-.controls button:nth-child(4),
-.controls button:nth-child(6) {
+.controls button[data-action="pattern"],
+.controls button[data-action="capture"],
+.controls button[data-action="rain"] {
   grid-column: span 2;
   background:
     linear-gradient(135deg, rgba(244, 114, 182, 0.34), rgba(34, 211, 238, 0.22)),
+    #111827;
+}
+
+.controls button[data-action="effect"] {
+  background:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.2), rgba(34, 211, 238, 0.18)),
     #111827;
 }
 
@@ -511,6 +576,33 @@ h1 {
     #34d399;
 }
 
+.controls button.is-effect-active {
+  color: #111827;
+  background:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.95), rgba(45, 212, 191, 0.82)),
+    #facc15;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 24px rgba(250, 204, 21, 0.26);
+}
+
+.shell.is-performance .controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.shell.is-performance .controls button {
+  min-height: 58px;
+  font-size: 0.95rem;
+}
+
+.shell.is-performance .controls button[data-action="rain"],
+.shell.is-performance .controls button[data-action="capture"],
+.shell.is-performance .controls button[data-action="effect"] {
+  grid-column: span 1;
+}
+
 @media (min-width: 620px) {
   .shell {
     padding-inline: 22px;
@@ -521,8 +613,9 @@ h1 {
     grid-template-columns: repeat(9, minmax(0, 1fr));
   }
 
-  .controls button:nth-child(4),
-  .controls button:nth-child(6) {
+  .controls button[data-action="pattern"],
+  .controls button[data-action="capture"],
+  .controls button[data-action="rain"] {
     grid-column: auto;
   }
 
@@ -532,6 +625,14 @@ h1 {
 
   .lab-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .shell.is-performance .controls {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .shell.is-performance .controls button {
+    min-height: 54px;
   }
 }
 
@@ -552,6 +653,15 @@ h1 {
   .controls button {
     min-height: 42px;
     padding: 8px 6px;
+  }
+
+  .shell.is-performance .controls button {
+    min-height: 50px;
+  }
+
+  .shell.is-performance .playfield-wrap,
+  .shell.is-performance .playfield {
+    min-height: clamp(330px, 50dvh, 560px);
   }
 
   .lab-panel:not([open]) summary {

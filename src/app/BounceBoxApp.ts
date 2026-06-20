@@ -1,50 +1,49 @@
 import { AudioEngine } from '../audio/audioEngine';
 import { Transport } from '../audio/transport';
 import { MidiLabPanel } from './MidiLabPanel';
+import { PadInteraction } from './padInteraction';
+import { PerformanceControls, type PerformanceEffectId } from './performanceControls';
+import { getBigHitIntensity, type Ripple, type TrailPoint } from './visualEffects';
 import { demoPatterns } from '../patterns/demoPatterns';
 import { LoopRecorder } from '../patterns/loopRecorder';
+import { clonePattern, mutatePattern } from '../patterns/mutations';
 import { PhysicsWorld } from '../physics/physicsWorld';
 import type { AppStatus, DemoPattern, GrooveEvent, PadPattern, PhysicsSnapshot, TransportState } from '../types';
-
-interface Ripple {
-  id: string;
-  x: number;
-  y: number;
-  color: string;
-  startedAt: number;
-  intensity: number;
-}
-
-interface TrailPoint {
-  x: number;
-  y: number;
-  radius: number;
-  age: number;
-}
 
 export class BounceBoxApp {
   private readonly root: HTMLElement;
   private readonly audio = new AudioEngine();
   private readonly transport = new Transport(demoPatterns[0].tempo);
   private readonly loopRecorder = new LoopRecorder();
+  private readonly performance = new PerformanceControls();
   private readonly physics = new PhysicsWorld((pad, speed) => this.handlePadHit(pad, speed));
+  private shell!: HTMLElement;
   private canvas!: HTMLCanvasElement;
   private context!: CanvasRenderingContext2D;
   private statusNode!: HTMLElement;
   private audioButton!: HTMLButtonElement;
   private captureButton!: HTMLButtonElement;
+  private performanceButton!: HTMLButtonElement;
+  private exitPerformanceButton!: HTMLButtonElement;
   private patternNode!: HTMLElement;
   private tempoValueNode!: HTMLElement;
   private beatNode!: HTMLElement;
+  private effectReadoutNode!: HTMLElement;
   private midiLab!: MidiLabPanel;
+  private padInteraction!: PadInteraction;
   private patternIndex = 0;
   private currentPattern: DemoPattern = demoPatterns[0];
+  private mutationBasePattern: DemoPattern = clonePattern(demoPatterns[0]);
+  private mutationCount = 0;
   private animationFrame = 0;
   private lastFrameAt = performance.now();
   private lastStatusRenderAt = 0;
   private ripples: Ripple[] = [];
   private trails = new Map<number, TrailPoint[]>();
   private padNoteCursor = new Map<string, number>();
+  private latestSnapshot: PhysicsSnapshot = { balls: [], pads: [] };
+  private draggingPadId: string | null = null;
+  private effectWasActive = false;
   private shakeUntil = 0;
   private status: AppStatus = {
     tempo: this.physics.tempo,
@@ -70,7 +69,11 @@ export class BounceBoxApp {
             <h1>BounceBox</h1>
             <p class="subtitle">Physics Groovebox</p>
           </div>
-          <div class="pulse-badge" aria-hidden="true">Bar 1.1</div>
+          <div class="hero-actions">
+            <button type="button" data-action="performance-mode">Performance Mode</button>
+            <button type="button" data-action="exit-performance" hidden>Exit Lab</button>
+            <div class="pulse-badge" aria-hidden="true">Bar 1.1</div>
+          </div>
         </section>
 
         <section class="pattern-strip" aria-label="Pattern and tempo">
@@ -89,6 +92,7 @@ export class BounceBoxApp {
           <canvas class="playfield" aria-label="Physics note playfield"></canvas>
           <div class="scanline" aria-hidden="true"></div>
           <div class="beat-grid" aria-label="Beat and bar indicator"></div>
+          <div class="effect-readout" data-effect-readout hidden></div>
         </section>
 
         <section class="status-panel" aria-live="polite"></section>
@@ -99,10 +103,15 @@ export class BounceBoxApp {
           <button type="button" data-action="audio">Start Audio</button>
           <button type="button" data-action="launch">Launch Ball</button>
           <button type="button" data-action="launch-3">Launch 3</button>
+          <button type="button" data-action="rain">Marble Rain</button>
           <button type="button" data-action="pattern">Generate Pattern</button>
-          <button type="button" data-action="chaos">Chaos</button>
           <button type="button" data-action="capture">Capture Loop</button>
           <button type="button" data-action="stop-balls">Stop Balls</button>
+          <button type="button" data-action="effect" data-effect="gravity-flip">Gravity Flip</button>
+          <button type="button" data-action="effect" data-effect="slow-mo">Slow-Mo</button>
+          <button type="button" data-action="effect" data-effect="orbit-chaos">Orbit Chaos</button>
+          <button type="button" data-action="mutate">Mutate Pattern</button>
+          <button type="button" data-action="reset-pattern">Reset Pattern</button>
           <button type="button" data-action="clear-loop">Clear Loop</button>
           <button type="button" data-action="clear">Clear</button>
         </nav>
@@ -110,38 +119,63 @@ export class BounceBoxApp {
     `;
 
     const canvas = this.root.querySelector<HTMLCanvasElement>('canvas');
+    const shell = this.root.querySelector<HTMLElement>('.shell');
     const context = canvas?.getContext('2d');
     const statusNode = this.root.querySelector<HTMLElement>('.status-panel');
     const audioButton = this.root.querySelector<HTMLButtonElement>('[data-action="audio"]');
     const captureButton = this.root.querySelector<HTMLButtonElement>('[data-action="capture"]');
+    const performanceButton = this.root.querySelector<HTMLButtonElement>('[data-action="performance-mode"]');
+    const exitPerformanceButton = this.root.querySelector<HTMLButtonElement>('[data-action="exit-performance"]');
     const patternNode = this.root.querySelector<HTMLElement>('[data-pattern-name]');
     const tempoValueNode = this.root.querySelector<HTMLElement>('[data-tempo-value]');
     const beatNode = this.root.querySelector<HTMLElement>('.beat-grid');
+    const effectReadoutNode = this.root.querySelector<HTMLElement>('[data-effect-readout]');
     const midiLabNode = this.root.querySelector<HTMLElement>('[data-midi-lab]');
 
     if (
+      !shell ||
       !canvas ||
       !context ||
       !statusNode ||
       !audioButton ||
       !captureButton ||
+      !performanceButton ||
+      !exitPerformanceButton ||
       !patternNode ||
       !tempoValueNode ||
       !beatNode ||
+      !effectReadoutNode ||
       !midiLabNode
     ) {
       throw new Error('BounceBox UI failed to initialize.');
     }
 
+    this.shell = shell;
     this.canvas = canvas;
     this.context = context;
     this.statusNode = statusNode;
     this.audioButton = audioButton;
     this.captureButton = captureButton;
+    this.performanceButton = performanceButton;
+    this.exitPerformanceButton = exitPerformanceButton;
     this.patternNode = patternNode;
     this.tempoValueNode = tempoValueNode;
     this.beatNode = beatNode;
+    this.effectReadoutNode = effectReadoutNode;
     this.midiLab = new MidiLabPanel(midiLabNode, (pattern) => this.applyImportedPattern(pattern));
+    this.padInteraction = new PadInteraction({
+      canvas: this.canvas,
+      getPads: () => this.latestSnapshot.pads,
+      onDragStart: (padId) => {
+        this.draggingPadId = padId;
+        this.canvas.classList.add('is-dragging-pad');
+      },
+      onDragMove: (padId, x, y) => this.movePad(padId, x, y),
+      onDragEnd: () => {
+        this.draggingPadId = null;
+        this.canvas.classList.remove('is-dragging-pad');
+      }
+    });
 
     this.bindControls();
     this.midiLab.mount();
@@ -179,6 +213,12 @@ export class BounceBoxApp {
         this.physics.launchBall(3);
       }
 
+      if (action === 'rain') {
+        await this.startAudio();
+        this.physics.rainBalls();
+        this.shakeUntil = performance.now() + 140;
+      }
+
       if (action === 'pattern') {
         this.loadNextPattern();
       }
@@ -191,9 +231,19 @@ export class BounceBoxApp {
         this.setTempo(this.transport.getTempo() + 2);
       }
 
-      if (action === 'chaos') {
-        this.physics.triggerChaos();
-        this.shakeUntil = performance.now() + 220;
+      if (action === 'performance-mode') {
+        this.setPerformanceMode(true);
+      }
+
+      if (action === 'exit-performance') {
+        this.setPerformanceMode(false);
+      }
+
+      if (action === 'effect') {
+        const effectId = target.dataset.effect as PerformanceEffectId | undefined;
+        if (effectId) {
+          this.startPerformanceEffect(effectId);
+        }
       }
 
       if (action === 'capture') {
@@ -209,13 +259,24 @@ export class BounceBoxApp {
         this.updateCaptureButton();
       }
 
+      if (action === 'mutate') {
+        this.mutateCurrentPattern();
+      }
+
+      if (action === 'reset-pattern') {
+        this.resetMutatedPattern();
+      }
+
       if (action === 'clear') {
         this.physics.clearBalls();
         this.loopRecorder.clearLoop();
         this.trails.clear();
         this.ripples = [];
+        this.performance.clear();
+        this.physics.resetPerformanceEffect();
         this.status.lastTriggeredNote = '-';
         this.updateCaptureButton();
+        this.renderEffectStatus();
       }
 
       this.syncStatus();
@@ -238,34 +299,67 @@ export class BounceBoxApp {
 
   private loadNextPattern(): void {
     this.patternIndex = (this.patternIndex + 1) % demoPatterns.length;
-    this.currentPattern = demoPatterns[this.patternIndex];
-    this.physics.loadPattern(this.currentPattern);
-    this.transport.setTempo(this.currentPattern.tempo);
-    this.loopRecorder.clearLoop();
-    this.ripples = [];
-    this.padNoteCursor.clear();
-    this.status.patternName = this.currentPattern.name;
-    this.status.tempo = this.currentPattern.tempo;
-    this.status.key = this.currentPattern.key;
-    this.status.lastTriggeredNote = this.currentPattern.name;
-    this.updateCaptureButton();
-    this.renderPatternHeader();
+    this.activatePattern(clonePattern(demoPatterns[this.patternIndex]), 'builtin');
   }
 
   private applyImportedPattern(pattern: DemoPattern): void {
+    this.activatePattern(pattern, 'imported');
+  }
+
+  private activatePattern(pattern: DemoPattern, source: 'builtin' | 'imported' | 'mutation' | 'reset'): void {
     this.currentPattern = pattern;
     this.physics.loadPattern(pattern);
     this.transport.setTempo(pattern.tempo);
     this.loopRecorder.clearLoop();
     this.ripples = [];
     this.padNoteCursor.clear();
+    this.latestSnapshot = this.physics.getSnapshot();
+
+    if (source === 'builtin' || source === 'imported' || source === 'reset') {
+      this.mutationBasePattern = clonePattern(pattern);
+      this.mutationCount = 0;
+    }
+
     this.status.patternName = pattern.name;
     this.status.tempo = pattern.tempo;
     this.status.key = pattern.key;
-    this.status.lastTriggeredNote = `Imported ${pattern.name}`;
+    this.status.lastTriggeredNote = source === 'imported' ? `Imported ${pattern.name}` : pattern.name;
     this.updateCaptureButton();
     this.renderPatternHeader();
     this.syncStatus();
+  }
+
+  private mutateCurrentPattern(): void {
+    this.mutationCount += 1;
+    const mutatedPattern = mutatePattern(this.currentPattern, this.mutationCount);
+    this.activatePattern(mutatedPattern, 'mutation');
+    this.status.lastTriggeredNote = 'Pattern mutated';
+  }
+
+  private resetMutatedPattern(): void {
+    this.activatePattern(clonePattern(this.mutationBasePattern), 'reset');
+    this.status.lastTriggeredNote = 'Pattern reset';
+  }
+
+  private setPerformanceMode(enabled: boolean): void {
+    this.shell.classList.toggle('is-performance', enabled);
+    this.performanceButton.hidden = enabled;
+    this.exitPerformanceButton.hidden = !enabled;
+
+    if (enabled) {
+      const labPanel = this.root.querySelector<HTMLDetailsElement>('.lab-panel');
+      labPanel?.removeAttribute('open');
+    }
+
+    window.setTimeout(() => this.resizeCanvas(), 60);
+  }
+
+  private startPerformanceEffect(effectId: PerformanceEffectId): void {
+    this.performance.start(effectId);
+    this.physics.applyPerformanceEffect(effectId);
+    this.effectWasActive = true;
+    this.shakeUntil = performance.now() + 180;
+    this.renderEffectStatus();
   }
 
   private toggleCapture(): void {
@@ -283,14 +377,15 @@ export class BounceBoxApp {
     const now = performance.now();
     const quantized = this.transport.getQuantizedStep(now);
     const event = this.createGrooveEvent(pad, speed, quantized.step, now);
+    const bigHit = getBigHitIntensity(pad.role, speed);
 
     this.loopRecorder.record(event, this.transport.stepsPerLoop);
     this.audio.triggerEvent(event, quantized.delayMs);
-    this.status.lastTriggeredNote = `${pad.label} ${pad.note}`;
-    this.addRipple(pad, speed, true);
+    this.status.lastTriggeredNote = `${pad.label} ${event.note}`;
+    this.addRipple(pad, speed, true, bigHit > 1.05 ? 'big' : 'hit');
 
-    if (speed > 8.5 || pad.kind === 'portal') {
-      this.shakeUntil = now + 160;
+    if (bigHit > 1.05 || speed > 8.5 || pad.kind === 'portal') {
+      this.shakeUntil = now + 120 + bigHit * 70;
     }
 
     this.syncStatus();
@@ -332,7 +427,7 @@ export class BounceBoxApp {
     return { note };
   }
 
-  private addRipple(pad: PadPattern, speed: number, recorded: boolean): void {
+  private addRipple(pad: PadPattern, speed: number, recorded: boolean, kind: Ripple['kind'] = 'hit'): void {
     const rect = this.canvas.getBoundingClientRect();
     this.ripples.push({
       id: `${pad.id}-${performance.now()}`,
@@ -340,8 +435,23 @@ export class BounceBoxApp {
       y: pad.y > 1 ? pad.y : pad.y * rect.height,
       color: recorded ? '#ffffff' : pad.color,
       startedAt: performance.now(),
-      intensity: Math.min(1.4, Math.max(0.5, speed / 8))
+      intensity: Math.min(1.9, Math.max(0.6, speed / 7)),
+      kind
     });
+  }
+
+  private movePad(padId: string, x: number, y: number): void {
+    const movedPad = this.physics.movePad(padId, x, y);
+
+    if (!movedPad) {
+      return;
+    }
+
+    this.currentPattern = {
+      ...this.currentPattern,
+      pads: this.currentPattern.pads.map((pad) => (pad.id === padId ? movedPad : pad))
+    };
+    this.latestSnapshot = this.physics.getSnapshot();
   }
 
   private resizeCanvas(): void {
@@ -359,11 +469,24 @@ export class BounceBoxApp {
     const delta = now - this.lastFrameAt;
     this.lastFrameAt = now;
 
+    this.updatePerformanceEffect(now);
     this.physics.step(delta);
     this.playLoopSteps(now);
     this.syncStatus(false);
-    this.draw(this.physics.getSnapshot(), this.transport.getState(now));
+    this.latestSnapshot = this.physics.getSnapshot();
+    this.draw(this.latestSnapshot, this.transport.getState(now));
     this.animationFrame = window.requestAnimationFrame(() => this.loop());
+  }
+
+  private updatePerformanceEffect(now: number): void {
+    const active = this.performance.update(now);
+
+    if (!active && this.effectWasActive) {
+      this.physics.resetPerformanceEffect();
+      this.effectWasActive = false;
+    }
+
+    this.renderEffectStatus();
   }
 
   private playLoopSteps(now: number): void {
@@ -378,7 +501,8 @@ export class BounceBoxApp {
           y: this.canvas.clientHeight * 0.14,
           color: event.color,
           startedAt: now,
-          intensity: event.velocity
+          intensity: event.velocity,
+          kind: 'loop'
         });
         this.status.lastTriggeredNote = `Loop ${event.note}`;
       }
@@ -409,9 +533,11 @@ export class BounceBoxApp {
   }
 
   private drawBackground(ctx: CanvasRenderingContext2D, width: number, height: number, transport: TransportState): void {
-    const beatGlow = transport.beat === 1 ? 0.14 : 0.06;
+    const activeEffect = this.performance.active;
+    const beatGlow = transport.beat === 1 ? 0.2 : 0.08;
+    const effectGlow = activeEffect ? 0.12 : 0;
     const gradient = ctx.createRadialGradient(width * 0.5, height * 0.15, 20, width * 0.5, height * 0.55, height);
-    gradient.addColorStop(0, `rgba(34, 211, 238, ${0.22 + beatGlow})`);
+    gradient.addColorStop(0, `rgba(34, 211, 238, ${0.22 + beatGlow + effectGlow})`);
     gradient.addColorStop(0.52, '#0a1028');
     gradient.addColorStop(1, '#040711');
 
@@ -443,19 +569,20 @@ export class BounceBoxApp {
 
   private drawPads(ctx: CanvasRenderingContext2D, snapshot: PhysicsSnapshot): void {
     for (const pad of snapshot.pads) {
-      const glow = pad.isActive ? 30 : pad.kind === 'portal' ? 18 : 12;
+      const isDragging = this.draggingPadId === pad.id;
+      const glow = isDragging ? 40 : pad.isActive ? 34 : pad.kind === 'portal' ? 18 : 12;
 
       ctx.save();
       ctx.shadowBlur = glow;
       ctx.shadowColor = pad.color;
       ctx.fillStyle = pad.color;
-      ctx.globalAlpha = pad.isActive ? 0.36 : 0.18;
+      ctx.globalAlpha = isDragging ? 0.42 : pad.isActive ? 0.38 : 0.18;
       ctx.beginPath();
-      ctx.arc(pad.x, pad.y, pad.radius * (pad.kind === 'portal' ? 1.45 : 1.28), 0, Math.PI * 2);
+      ctx.arc(pad.x, pad.y, pad.radius * (isDragging ? 1.58 : pad.kind === 'portal' ? 1.45 : 1.28), 0, Math.PI * 2);
       ctx.fill();
 
       ctx.globalAlpha = 1;
-      ctx.lineWidth = pad.isActive ? 3 : 2;
+      ctx.lineWidth = isDragging || pad.isActive ? 3 : 2;
       ctx.strokeStyle = pad.color;
       ctx.beginPath();
       ctx.arc(pad.x, pad.y, pad.radius, 0, Math.PI * 2);
@@ -498,6 +625,7 @@ export class BounceBoxApp {
         x: Math.min(width + ball.radius, Math.max(-ball.radius, ball.x)),
         y: Math.min(height + ball.radius, Math.max(-ball.radius, ball.y)),
         radius: ball.radius,
+        speed: ball.speed,
         age: 0
       };
       this.trails.set(ball.id, [clippedPoint, ...existing.map((point) => ({ ...point, age: point.age + 1 }))].slice(0, 12));
@@ -507,13 +635,14 @@ export class BounceBoxApp {
   private drawTrails(ctx: CanvasRenderingContext2D): void {
     for (const points of this.trails.values()) {
       points.forEach((point, index) => {
+        const speedBoost = Math.min(0.2, point.speed / 70);
         ctx.save();
-        ctx.globalAlpha = Math.max(0, 0.28 - index * 0.022);
+        ctx.globalAlpha = Math.max(0, 0.22 + speedBoost - index * 0.019);
         ctx.fillStyle = '#22d3ee';
-        ctx.shadowBlur = 14;
+        ctx.shadowBlur = 12 + Math.min(18, point.speed * 1.2);
         ctx.shadowColor = '#22d3ee';
         ctx.beginPath();
-        ctx.arc(point.x, point.y, Math.max(2, point.radius * (0.9 - index * 0.045)), 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, Math.max(2, point.radius * (0.95 - index * 0.04)), 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       });
@@ -526,15 +655,16 @@ export class BounceBoxApp {
 
     for (const ripple of this.ripples) {
       const progress = (now - ripple.startedAt) / 540;
+      const bigMultiplier = ripple.kind === 'big' ? 1.45 : ripple.kind === 'loop' ? 0.82 : 1;
 
       ctx.save();
-      ctx.globalAlpha = (1 - progress) * 0.6;
+      ctx.globalAlpha = (1 - progress) * (ripple.kind === 'big' ? 0.82 : 0.62);
       ctx.strokeStyle = ripple.color;
-      ctx.lineWidth = 2 + ripple.intensity;
-      ctx.shadowBlur = 18;
+      ctx.lineWidth = 2 + ripple.intensity * bigMultiplier;
+      ctx.shadowBlur = 18 + ripple.intensity * 10;
       ctx.shadowColor = ripple.color;
       ctx.beginPath();
-      ctx.arc(ripple.x, ripple.y, 12 + progress * 58 * ripple.intensity, 0, Math.PI * 2);
+      ctx.arc(ripple.x, ripple.y, 10 + progress * 70 * ripple.intensity * bigMultiplier, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -630,6 +760,25 @@ export class BounceBoxApp {
     if (badge) {
       badge.textContent = `Bar ${transport.bar}.${transport.beat}`;
     }
+  }
+
+  private renderEffectStatus(): void {
+    const activeEffect = this.performance.active;
+    const remainingSeconds = this.performance.getRemainingSeconds();
+
+    this.effectReadoutNode.hidden = !activeEffect;
+    this.effectReadoutNode.textContent = activeEffect ? `${activeEffect.label} ${remainingSeconds}s` : '';
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-effect]').forEach((button) => {
+      const isActive = Boolean(activeEffect && button.dataset.effect === activeEffect.id);
+      button.classList.toggle('is-effect-active', isActive);
+
+      if (isActive && activeEffect) {
+        button.textContent = `${activeEffect.label} ${remainingSeconds}s`;
+      } else {
+        button.textContent = button.dataset.effect === 'gravity-flip' ? 'Gravity Flip' : button.dataset.effect === 'slow-mo' ? 'Slow-Mo' : 'Orbit Chaos';
+      }
+    });
   }
 
   destroy(): void {

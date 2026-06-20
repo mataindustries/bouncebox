@@ -1,4 +1,5 @@
 import Matter from 'matter-js';
+import type { PerformanceEffectId } from '../app/performanceControls';
 import type { BallSnapshot, DemoPattern, PadPattern, PadSnapshot, PhysicsSnapshot } from '../types';
 import { demoPatterns } from '../patterns/demoPatterns';
 
@@ -18,6 +19,7 @@ export class PhysicsWorld {
   private height = 480;
   private nextBallId = 1;
   private chaosTimer: number | null = null;
+  private activeEffect: PerformanceEffectId | null = null;
   private readonly onPadHit: PadHitHandler;
 
   tempo = demoPatterns[0].tempo;
@@ -56,13 +58,79 @@ export class PhysicsWorld {
     }
   }
 
+  rainBalls(count = 9): void {
+    const safeCount = Math.min(14, Math.max(4, count));
+
+    for (let index = 0; index < safeCount; index += 1) {
+      window.setTimeout(() => {
+        const x = this.width * (0.14 + (index / Math.max(1, safeCount - 1)) * 0.72);
+        this.addBall(x, 18 + Math.random() * 10, {
+          x: (Math.random() - 0.5) * 2.4,
+          y: 2.2 + Math.random() * 1.8
+        });
+      }, index * 95);
+    }
+  }
+
   stopBalls(): void {
     this.clearBalls();
   }
 
-  private addBall(): void {
+  movePad(padId: string, x: number, y: number): PadPattern | null {
+    const padConfig = this.padConfigById.get(padId);
+    const padBody = this.pads.find((pad) => String(pad.plugin.padId) === padId);
+
+    if (!padConfig || !padBody) {
+      return null;
+    }
+
+    const radius = padBody.circleRadius ?? padConfig.radius * this.width;
+    const nextX = Math.min(this.width - radius, Math.max(radius, x));
+    const nextY = Math.min(this.height - radius, Math.max(radius, y));
+    const nextConfig = {
+      ...padConfig,
+      x: nextX / this.width,
+      y: nextY / this.height
+    };
+
+    this.padConfigById.set(padId, nextConfig);
+    Matter.Body.setPosition(padBody, { x: nextX, y: nextY });
+    return nextConfig;
+  }
+
+  applyPerformanceEffect(effectId: PerformanceEffectId): void {
+    this.resetPerformanceEffect();
+    this.activeEffect = effectId;
+
+    if (effectId === 'gravity-flip') {
+      this.engine.gravity.x = 0;
+      this.engine.gravity.y = -0.68;
+      this.kickBalls(0, -2.2);
+    }
+
+    if (effectId === 'slow-mo') {
+      this.engine.timing.timeScale = 0.42;
+      this.engine.gravity.x = 0;
+      this.engine.gravity.y = 0.46;
+    }
+
+    if (effectId === 'orbit-chaos') {
+      this.engine.gravity.x = 0;
+      this.engine.gravity.y = 0.12;
+      this.kickBalls(1.6, -1.2);
+    }
+  }
+
+  resetPerformanceEffect(): void {
+    this.activeEffect = null;
+    this.engine.gravity.x = 0;
+    this.engine.gravity.y = 0.72;
+    this.engine.timing.timeScale = 1;
+  }
+
+  private addBall(x = this.width * (0.35 + Math.random() * 0.3), y?: number, velocity?: { x: number; y: number }): void {
     const radius = Math.max(10, Math.min(16, this.width * 0.035));
-    const ball = Matter.Bodies.circle(this.width * (0.35 + Math.random() * 0.3), radius + 20, radius, {
+    const ball = Matter.Bodies.circle(x, y ?? radius + 20, radius, {
       label: 'ball',
       restitution: 0.96,
       friction: 0,
@@ -72,10 +140,7 @@ export class PhysicsWorld {
     });
 
     ball.plugin = { bounceBoxId: this.nextBallId };
-    Matter.Body.setVelocity(ball, {
-      x: (Math.random() - 0.5) * 7,
-      y: 3 + Math.random() * 2
-    });
+    Matter.Body.setVelocity(ball, velocity ?? { x: (Math.random() - 0.5) * 7, y: 3 + Math.random() * 2 });
 
     this.nextBallId += 1;
     this.balls.push(ball);
@@ -112,6 +177,7 @@ export class PhysicsWorld {
   }
 
   step(deltaMs: number): void {
+    this.applyOrbitForces();
     Matter.Engine.update(this.engine, Math.min(deltaMs, 1000 / 30));
     this.nudgeSlowBalls();
     this.removeEscapedBalls();
@@ -271,6 +337,36 @@ export class PhysicsWorld {
           y: -4.2 - Math.random() * 1.8
         });
       }
+    }
+  }
+
+  private kickBalls(xBoost: number, yBoost: number): void {
+    for (const ball of this.balls) {
+      Matter.Body.setVelocity(ball, {
+        x: ball.velocity.x + (Math.random() - 0.5) * xBoost,
+        y: ball.velocity.y + yBoost
+      });
+    }
+  }
+
+  private applyOrbitForces(): void {
+    if (this.activeEffect !== 'orbit-chaos') {
+      return;
+    }
+
+    const center = { x: this.width / 2, y: this.height / 2 };
+
+    for (const ball of this.balls) {
+      const dx = center.x - ball.position.x;
+      const dy = center.y - ball.position.y;
+      const distance = Math.max(80, Math.hypot(dx, dy));
+      const pull = 0.000018 * ball.mass;
+      const swirl = 0.000014 * ball.mass;
+
+      Matter.Body.applyForce(ball, ball.position, {
+        x: (dx / distance) * pull + (-dy / distance) * swirl,
+        y: (dy / distance) * pull + (dx / distance) * swirl
+      });
     }
   }
 }
