@@ -1,34 +1,39 @@
-export type NoteName =
-  | 'C2'
-  | 'D2'
-  | 'E2'
-  | 'F2'
-  | 'G2'
-  | 'A2'
-  | 'B2'
-  | 'C3'
-  | 'D3'
-  | 'E3'
-  | 'F3'
-  | 'G3'
-  | 'A3'
-  | 'B3'
-  | 'C4'
-  | 'D4'
-  | 'E4'
-  | 'F4'
-  | 'G4'
-  | 'A4'
-  | 'B4'
-  | 'C5';
+type NoteLetter = 'C' | 'D' | 'E' | 'F' | 'G' | 'A' | 'B';
+type Accidental = '' | '#' | 'b';
+type Octave = '1' | '2' | '3' | '4' | '5';
+
+export type NoteName = `${NoteLetter}${Accidental}${Octave}`;
+export type InstrumentRole = 'kick' | 'snare' | 'hihat' | 'bass' | 'pluck' | 'pad' | 'portal';
+export type PadKind = 'drum' | 'bass' | 'note' | 'chord' | 'portal';
 
 export interface PadPattern {
   id: string;
+  label: string;
+  instrumentId: string;
+  role: InstrumentRole;
+  kind: PadKind;
   note: NoteName;
+  notes?: NoteName[];
   x: number;
   y: number;
   radius: number;
   color: string;
+}
+
+export interface PatternInstrument {
+  id: string;
+  role: InstrumentRole;
+  label: string;
+  color: string;
+  notes: NoteName[];
+}
+
+export interface PatternStep {
+  bar: number;
+  beat: number;
+  instrumentId: string;
+  note: NoteName;
+  velocity: number;
 }
 
 export interface DemoPattern {
@@ -36,7 +41,11 @@ export interface DemoPattern {
   name: string;
   tempo: number;
   key: string;
+  bars: number;
+  timeSignature: [number, number];
+  instruments: PatternInstrument[];
   pads: PadPattern[];
+  seedSteps: PatternStep[];
 }
 
 export interface BallSnapshot {
@@ -59,7 +68,33 @@ export interface PhysicsSnapshot {
 export interface AppStatus {
   tempo: number;
   key: string;
+  patternName: string;
   activeBalls: number;
   lastTriggeredNote: string;
   audioReady: boolean;
+  loopEvents: number;
+  loopFrozen: boolean;
+}
+
+export interface TransportState {
+  tempo: number;
+  bar: number;
+  beat: number;
+  step: number;
+  loopBars: number;
+  isPlaying: boolean;
+}
+
+export interface GrooveEvent {
+  id: string;
+  padId: string;
+  instrumentId: string;
+  role: InstrumentRole;
+  kind: PadKind;
+  note: NoteName;
+  notes?: NoteName[];
+  color: string;
+  velocity: number;
+  step: number;
+  recordedAt: number;
 }

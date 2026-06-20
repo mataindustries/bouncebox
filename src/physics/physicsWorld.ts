@@ -48,7 +48,17 @@ export class PhysicsWorld {
     this.rebuildStaticBodies();
   }
 
-  launchBall(): void {
+  launchBall(count = 1): void {
+    for (let index = 0; index < count; index += 1) {
+      window.setTimeout(() => this.addBall(), index * 110);
+    }
+  }
+
+  stopBalls(): void {
+    this.clearBalls();
+  }
+
+  private addBall(): void {
     const radius = Math.max(10, Math.min(16, this.width * 0.035));
     const ball = Matter.Bodies.circle(this.width * (0.35 + Math.random() * 0.3), radius + 20, radius, {
       label: 'ball',
@@ -101,6 +111,7 @@ export class PhysicsWorld {
 
   step(deltaMs: number): void {
     Matter.Engine.update(this.engine, Math.min(deltaMs, 1000 / 30));
+    this.nudgeSlowBalls();
     this.removeEscapedBalls();
   }
 
@@ -153,10 +164,11 @@ export class PhysicsWorld {
 
   private createPads(): Matter.Body[] {
     return [...this.padConfigById.values()].map((pad) => {
+      const restitution = pad.kind === 'portal' ? 1.26 : pad.kind === 'drum' ? 1.18 : 1.1;
       const body = Matter.Bodies.circle(pad.x * this.width, pad.y * this.height, pad.radius * this.width, {
         label: `pad:${pad.id}`,
         isStatic: true,
-        restitution: 1.12,
+        restitution,
         friction: 0,
         render: { visible: false }
       });
@@ -186,6 +198,14 @@ export class PhysicsWorld {
     const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
     this.lastPadHitAt.set(padId, now);
     this.activePadUntil.set(padId, now + 180);
+
+    if (padConfig.kind === 'portal') {
+      Matter.Body.setVelocity(ball, {
+        x: ball.velocity.x * 1.08 + (Math.random() - 0.5) * 4,
+        y: Math.min(ball.velocity.y - 4.5, -2)
+      });
+    }
+
     this.onPadHit(padConfig, speed);
   }
 
@@ -236,5 +256,19 @@ export class PhysicsWorld {
     }
 
     this.balls = keep;
+  }
+
+  private nudgeSlowBalls(): void {
+    for (const ball of this.balls) {
+      const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
+      const nearBottom = ball.position.y > this.height * 0.78;
+
+      if (speed < 0.45 && nearBottom) {
+        Matter.Body.setVelocity(ball, {
+          x: (Math.random() - 0.5) * 3.2,
+          y: -4.2 - Math.random() * 1.8
+        });
+      }
+    }
   }
 }
