@@ -3,7 +3,7 @@ import { Transport } from '../audio/transport';
 import { MidiLabPanel } from './MidiLabPanel';
 import { PadInteraction } from './padInteraction';
 import { PerformanceControls, type PerformanceEffectId } from './performanceControls';
-import { getBigHitIntensity, type Ripple, type TrailPoint } from './visualEffects';
+import { getBigHitIntensity, getRoleVisual, type HitParticle, type Ripple, type TrailPoint } from './visualEffects';
 import { demoPatterns } from '../patterns/demoPatterns';
 import { LoopRecorder } from '../patterns/loopRecorder';
 import { clonePattern, mutatePattern } from '../patterns/mutations';
@@ -40,6 +40,7 @@ export class BounceBoxApp {
   private lastFrameAt = performance.now();
   private lastStatusRenderAt = 0;
   private ripples: Ripple[] = [];
+  private particles: HitParticle[] = [];
   private trails = new Map<number, TrailPoint[]>();
   private padNoteCursor = new Map<string, number>();
   private mutatedPadPulseUntil = new Map<string, number>();
@@ -107,23 +108,23 @@ export class BounceBoxApp {
         <nav class="controls" aria-label="Groovebox controls">
           <div class="control-group control-group-launch">
             <small>Launch</small>
-            <button type="button" data-action="audio">Start Audio</button>
-            <button type="button" data-action="launch">Launch Ball</button>
+            <button type="button" data-action="audio">Audio</button>
+            <button type="button" data-action="launch">Ball</button>
             <button type="button" data-action="launch-3">Launch 3</button>
-            <button type="button" data-action="rain">Marble Rain</button>
+            <button type="button" data-action="rain">Rain</button>
           </div>
           <div class="control-group control-group-groove">
             <small>Groove</small>
-            <button type="button" data-action="capture">Capture Loop</button>
-            <button type="button" data-action="stop-balls">Stop Balls</button>
+            <button type="button" data-action="capture">Capture</button>
+            <button type="button" data-action="stop-balls">Stop</button>
             <button type="button" data-action="clear-loop">Clear Loop</button>
             <button type="button" data-action="clear">Clear</button>
           </div>
           <div class="control-group control-group-fx">
             <small>FX</small>
-            <button type="button" data-action="effect" data-effect="gravity-flip">Gravity Flip</button>
+            <button type="button" data-action="effect" data-effect="gravity-flip">Gravity</button>
             <button type="button" data-action="effect" data-effect="slow-mo">Slow-Mo</button>
-            <button type="button" data-action="effect" data-effect="orbit-chaos">Orbit Chaos</button>
+            <button type="button" data-action="effect" data-effect="orbit-chaos">Orbit</button>
           </div>
           <div class="control-group control-group-pattern">
             <small>Pattern</small>
@@ -292,6 +293,7 @@ export class BounceBoxApp {
         this.loopRecorder.clearLoop();
         this.trails.clear();
         this.ripples = [];
+        this.particles = [];
         this.performance.clear();
         this.physics.resetPerformanceEffect();
         this.status.lastTriggeredNote = '-';
@@ -306,7 +308,7 @@ export class BounceBoxApp {
   private async startAudio(): Promise<void> {
     await this.audio.start();
     this.status.audioReady = this.audio.isReady;
-    this.audioButton.textContent = this.status.audioReady ? 'Audio Ready' : 'Start Audio';
+    this.audioButton.textContent = this.status.audioReady ? 'Ready' : 'Audio';
     this.audioButton.classList.toggle('is-ready', this.status.audioReady);
   }
 
@@ -332,6 +334,7 @@ export class BounceBoxApp {
     this.transport.setTempo(pattern.tempo);
     this.loopRecorder.clearLoop();
     this.ripples = [];
+    this.particles = [];
     this.padNoteCursor.clear();
     this.latestSnapshot = this.physics.getSnapshot();
 
@@ -410,7 +413,7 @@ export class BounceBoxApp {
 
   private updateCaptureButton(): void {
     const frozen = this.loopRecorder.isFrozen;
-    this.captureButton.textContent = frozen ? 'Groove Frozen' : 'Capture Loop';
+    this.captureButton.textContent = frozen ? 'Frozen' : 'Capture';
     this.captureButton.classList.toggle('is-ready', frozen);
   }
 
@@ -419,11 +422,13 @@ export class BounceBoxApp {
     const quantized = this.transport.getQuantizedStep(now);
     const event = this.createGrooveEvent(pad, speed, quantized.step, now);
     const bigHit = getBigHitIntensity(pad.role, speed);
+    const visual = getRoleVisual(pad.role);
 
     this.loopRecorder.record(event, this.transport.stepsPerLoop);
     this.audio.triggerEvent(event, quantized.delayMs);
     this.status.lastTriggeredNote = `${pad.label} ${event.note}`;
-    this.addRipple(pad, speed, true, bigHit > 1.05 ? 'big' : 'hit');
+    this.addRipple(pad, speed, true, bigHit > 1.05 ? 'big' : 'hit', visual.ringScale);
+    this.spawnParticles(pad, visual, bigHit);
 
     if (bigHit > 1.05 || speed > 8.5 || pad.kind === 'portal') {
       this.shakeUntil = now + 120 + bigHit * 70;
@@ -468,17 +473,45 @@ export class BounceBoxApp {
     return { note };
   }
 
-  private addRipple(pad: PadPattern, speed: number, recorded: boolean, kind: Ripple['kind'] = 'hit'): void {
+  private addRipple(pad: PadPattern, speed: number, recorded: boolean, kind: Ripple['kind'] = 'hit', scale = 1): void {
     const rect = this.canvas.getBoundingClientRect();
     this.ripples.push({
       id: `${pad.id}-${performance.now()}`,
       x: pad.x > 1 ? pad.x : pad.x * rect.width,
       y: pad.y > 1 ? pad.y : pad.y * rect.height,
-      color: recorded ? '#ffffff' : pad.color,
+      color: recorded ? pad.color : '#ffffff',
       startedAt: performance.now(),
-      intensity: Math.min(1.9, Math.max(0.6, speed / 7)),
+      intensity: Math.min(2.2, Math.max(0.6, (speed / 7) * scale)),
       kind
     });
+  }
+
+  private spawnParticles(pad: PadPattern, visual: ReturnType<typeof getRoleVisual>, intensity: number): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = pad.x > 1 ? pad.x : pad.x * rect.width;
+    const y = pad.y > 1 ? pad.y : pad.y * rect.height;
+    const count = Math.min(10, Math.max(3, Math.round(visual.particleCount * Math.min(1.2, intensity))));
+    const now = performance.now();
+
+    for (let index = 0; index < count; index += 1) {
+      const angle = (index / count) * Math.PI * 2 + Math.random() * 0.55;
+      const speed = visual.particleSpeed * (0.55 + Math.random() * 0.75);
+      this.particles.push({
+        id: `${pad.id}-spark-${now}-${index}`,
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        color: visual.accentColor,
+        size: 1.6 + Math.random() * 2.8,
+        lifeMs: 360 + Math.random() * 260,
+        startedAt: now
+      });
+    }
+
+    if (this.particles.length > 120) {
+      this.particles = this.particles.slice(-120);
+    }
   }
 
   private movePad(padId: string, x: number, y: number): void {
@@ -615,6 +648,7 @@ export class BounceBoxApp {
     this.drawTrails(ctx);
     this.drawPads(ctx, snapshot);
     this.drawRipples(ctx);
+    this.drawParticles(ctx);
     this.drawBalls(ctx, snapshot);
     ctx.restore();
     this.renderBeatGrid(transport);
@@ -622,6 +656,7 @@ export class BounceBoxApp {
 
   private drawBackground(ctx: CanvasRenderingContext2D, width: number, height: number, transport: TransportState): void {
     const activeEffect = this.performance.active;
+    const now = performance.now();
     const beatGlow = transport.beat === 1 ? 0.2 : 0.08;
     const effectGlow = activeEffect ? 0.12 : 0;
     const gradient = ctx.createRadialGradient(width * 0.5, height * 0.15, 20, width * 0.5, height * 0.55, height);
@@ -633,7 +668,7 @@ export class BounceBoxApp {
     ctx.fillRect(0, 0, width, height);
 
     ctx.save();
-    ctx.globalAlpha = 0.14;
+    ctx.globalAlpha = 0.1 + Math.sin(now / 900) * 0.025;
     ctx.strokeStyle = '#67e8f9';
     ctx.lineWidth = 1;
 
@@ -653,6 +688,29 @@ export class BounceBoxApp {
     }
 
     ctx.restore();
+
+    const floor = ctx.createLinearGradient(0, height * 0.66, 0, height);
+    floor.addColorStop(0, 'rgba(34, 211, 238, 0)');
+    floor.addColorStop(0.55, 'rgba(34, 211, 238, 0.08)');
+    floor.addColorStop(1, 'rgba(244, 114, 182, 0.12)');
+    ctx.fillStyle = floor;
+    ctx.fillRect(0, height * 0.66, width, height * 0.34);
+
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = `rgba(103, 232, 249, ${0.16 + beatGlow * 0.22})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(width * 0.12, height * 0.82);
+    ctx.quadraticCurveTo(width * 0.5, height * 0.76, width * 0.88, height * 0.82);
+    ctx.stroke();
+    ctx.restore();
+
+    const vignette = ctx.createRadialGradient(width * 0.5, height * 0.48, height * 0.18, width * 0.5, height * 0.5, height * 0.78);
+    vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vignette.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, width, height);
   }
 
   private drawPads(ctx: CanvasRenderingContext2D, snapshot: PhysicsSnapshot): void {
@@ -660,6 +718,8 @@ export class BounceBoxApp {
       const isDragging = this.draggingPadId === pad.id;
       const isMutatedPulse = (this.mutatedPadPulseUntil.get(pad.id) ?? 0) > performance.now();
       const glow = isDragging || isMutatedPulse ? 44 : pad.isActive ? 34 : pad.kind === 'portal' ? 18 : 12;
+      const roleVisual = getRoleVisual(pad.role);
+      const coreGradient = ctx.createRadialGradient(pad.x - pad.radius * 0.28, pad.y - pad.radius * 0.34, 2, pad.x, pad.y, pad.radius);
 
       ctx.save();
       ctx.shadowBlur = glow;
@@ -671,26 +731,59 @@ export class BounceBoxApp {
       ctx.fill();
 
       ctx.globalAlpha = 1;
+      coreGradient.addColorStop(0, '#ffffff');
+      coreGradient.addColorStop(0.22, roleVisual.accentColor);
+      coreGradient.addColorStop(0.58, pad.color);
+      coreGradient.addColorStop(1, 'rgba(2, 6, 23, 0.9)');
+      ctx.fillStyle = coreGradient;
+      ctx.beginPath();
+      ctx.arc(pad.x, pad.y, pad.radius * 0.9, 0, Math.PI * 2);
+      ctx.fill();
+
       ctx.lineWidth = isDragging || isMutatedPulse || pad.isActive ? 3 : 2;
       ctx.strokeStyle = pad.color;
       ctx.beginPath();
       ctx.arc(pad.x, pad.y, pad.radius, 0, Math.PI * 2);
       ctx.stroke();
 
+      ctx.globalAlpha = 0.82;
+      ctx.strokeStyle = 'rgba(255,255,255,0.74)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(pad.x, pad.y, pad.radius * 0.68, Math.PI * 1.08, Math.PI * 1.72);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
       if (pad.kind === 'portal') {
+        const orbit = performance.now() / 430;
+        for (let index = 0; index < 3; index += 1) {
+          const angle = orbit + index * ((Math.PI * 2) / 3);
+          ctx.fillStyle = roleVisual.accentColor;
+          ctx.globalAlpha = 0.86;
+          ctx.beginPath();
+          ctx.arc(pad.x + Math.cos(angle) * pad.radius * 0.78, pad.y + Math.sin(angle) * pad.radius * 0.78, 2.1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
         ctx.beginPath();
         ctx.arc(pad.x, pad.y, pad.radius * (0.58 + Math.sin(performance.now() / 180) * 0.05), 0, Math.PI * 2);
         ctx.stroke();
       }
 
       ctx.shadowBlur = 0;
-      ctx.fillStyle = '#f8fafc';
       ctx.font = `${isMutatedPulse ? '900' : '800'} ${pad.radius > 24 ? 12 : 11}px Inter, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.58)';
+      ctx.strokeText(pad.label, pad.x, pad.y - 5);
+      ctx.fillStyle = '#f8fafc';
       ctx.fillText(pad.label, pad.x, pad.y - 5);
-      ctx.fillStyle = '#cbd5e1';
       ctx.font = `700 ${pad.radius > 24 ? 11 : 10}px Inter, system-ui, sans-serif`;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.56)';
+      ctx.strokeText(pad.kind === 'drum' ? pad.role.toUpperCase() : pad.note, pad.x, pad.y + 8);
+      ctx.fillStyle = '#cbd5e1';
       ctx.fillText(pad.kind === 'drum' ? pad.role.toUpperCase() : pad.note, pad.x, pad.y + 8);
       ctx.restore();
     }
@@ -719,6 +812,11 @@ export class BounceBoxApp {
       };
       this.trails.set(ball.id, [clippedPoint, ...existing.map((point) => ({ ...point, age: point.age + 1 }))].slice(0, 12));
     }
+
+    if (this.trails.size > 18) {
+      const liveIds = [...this.trails.keys()].slice(-18);
+      this.trails = new Map(liveIds.map((id) => [id, this.trails.get(id) ?? []]));
+    }
   }
 
   private drawTrails(ctx: CanvasRenderingContext2D): void {
@@ -726,7 +824,7 @@ export class BounceBoxApp {
       points.forEach((point, index) => {
         const speedBoost = Math.min(0.2, point.speed / 70);
         ctx.save();
-        ctx.globalAlpha = Math.max(0, 0.22 + speedBoost - index * 0.019);
+        ctx.globalAlpha = Math.max(0, 0.18 + speedBoost - index * 0.02);
         ctx.fillStyle = '#22d3ee';
         ctx.shadowBlur = 12 + Math.min(18, point.speed * 1.2);
         ctx.shadowColor = '#22d3ee';
@@ -735,6 +833,28 @@ export class BounceBoxApp {
         ctx.fill();
         ctx.restore();
       });
+    }
+  }
+
+  private drawParticles(ctx: CanvasRenderingContext2D): void {
+    const now = performance.now();
+    this.particles = this.particles.filter((particle) => now - particle.startedAt < particle.lifeMs);
+
+    for (const particle of this.particles) {
+      const progress = (now - particle.startedAt) / particle.lifeMs;
+      const ease = 1 - progress;
+      const x = particle.x + particle.vx * progress * 46;
+      const y = particle.y + particle.vy * progress * 46 + progress * progress * 12;
+
+      ctx.save();
+      ctx.globalAlpha = ease * 0.78;
+      ctx.fillStyle = particle.color;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = particle.color;
+      ctx.beginPath();
+      ctx.arc(x, y, particle.size * ease, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
   }
 
@@ -781,6 +901,11 @@ export class BounceBoxApp {
       ctx.fillStyle = gradient;
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = 'rgba(255,255,255,0.82)';
+      ctx.beginPath();
+      ctx.arc(ball.x - ball.radius * 0.28, ball.y - ball.radius * 0.34, Math.max(2, ball.radius * 0.24), 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
@@ -865,7 +990,7 @@ export class BounceBoxApp {
       if (isActive && activeEffect) {
         button.textContent = `${activeEffect.label} ${remainingSeconds}s`;
       } else {
-        button.textContent = button.dataset.effect === 'gravity-flip' ? 'Gravity Flip' : button.dataset.effect === 'slow-mo' ? 'Slow-Mo' : 'Orbit Chaos';
+        button.textContent = button.dataset.effect === 'gravity-flip' ? 'Gravity' : button.dataset.effect === 'slow-mo' ? 'Slow-Mo' : 'Orbit';
       }
     });
   }

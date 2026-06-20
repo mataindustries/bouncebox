@@ -54,6 +54,8 @@ export class MidiLabPanel {
             <code>${midiLabMiniPrompt}</code>
             <button type="button" data-midi-action="copy-prompt">Copy Prompt</button>
           </div>
+
+          <p class="lab-footer">Paste ChatGPT MIDI JSON -> turn it into a playable physics instrument.</p>
         </div>
       </details>
     `;

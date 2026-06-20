@@ -315,23 +315,33 @@ h1 {
   display: grid;
   grid-template-columns: repeat(16, minmax(0, 1fr));
   gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(103, 232, 249, 0.12);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   pointer-events: none;
 }
 
 .beat-grid span {
-  height: 5px;
+  height: 6px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.26);
   box-shadow: 0 0 0 rgba(34, 211, 238, 0);
+  transition:
+    background 120ms ease,
+    box-shadow 120ms ease,
+    transform 120ms ease;
 }
 
 .beat-grid span.is-downbeat {
-  background: rgba(248, 250, 252, 0.36);
+  background: rgba(248, 250, 252, 0.42);
 }
 
 .beat-grid span.is-active {
   background: #67e8f9;
   box-shadow: 0 0 14px rgba(34, 211, 238, 0.72);
+  transform: scaleY(1.65);
 }
 
 .effect-readout {
@@ -636,12 +646,20 @@ h1 {
   white-space: nowrap;
 }
 
+.lab-footer {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+}
+
 .controls {
   position: sticky;
   bottom: max(8px, env(safe-area-inset-bottom));
   z-index: 5;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 10px;
   border: 1px solid rgba(103, 232, 249, 0.18);
@@ -681,7 +699,10 @@ h1 {
   background:
     linear-gradient(135deg, rgba(34, 211, 238, 0.28), rgba(167, 139, 250, 0.2)),
     #0f172a;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  white-space: normal;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
     0 8px 22px rgba(0, 0, 0, 0.24);
@@ -746,6 +767,13 @@ h1 {
   min-height: 45px;
   padding: 8px 6px;
   font-size: 0.74rem;
+  overflow-wrap: normal;
+}
+
+@media (min-width: 460px) {
+  .controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (min-width: 620px) {

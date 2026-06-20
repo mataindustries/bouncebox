@@ -85,18 +85,18 @@ kick, snare, hat, bass, lead, pluck, pad, chord, arp, fx
 
 ## Controls
 
-- **Start Audio** unlocks the Web Audio context.
-- **Launch Ball** adds one bouncing ball to the canvas.
+- **Audio** unlocks the Web Audio context.
+- **Ball** adds one bouncing ball to the canvas.
 - **Launch 3** adds three balls with a short stagger.
-- **Marble Rain** drops several balls from the top in a controlled spread.
-- **Generate Pattern** cycles through Neon Bounce, Skullstep, and Space Marbles.
-- **Capture Loop** freezes the last 4 bars of collision hits and replays them on the grid.
-- **Stop Balls** removes active balls while a frozen groove keeps playing.
-- **Gravity Flip** flips gravity for a few seconds.
+- **Rain** drops several balls from the top in a controlled spread.
+- **Pattern** cycles through Neon Bounce, Skullstep, and Space Marbles.
+- **Capture** freezes the last 4 bars of collision hits and replays them on the grid.
+- **Stop** removes active balls while a frozen groove keeps playing.
+- **Gravity** flips gravity for a few seconds.
 - **Slow-Mo** slows physics while preserving loop playback.
-- **Orbit Chaos** adds a centered swirl force for a few seconds.
-- **Mutate Pattern** applies a constrained musical mutation.
-- **Reset Pattern** restores the pattern before mutation.
+- **Orbit** adds a centered swirl force for a few seconds.
+- **Mutate** applies a constrained musical mutation.
+- **Reset** restores the pattern before mutation.
 - **Clear Loop** clears captured loop data.
 - **Clear** removes active balls, loop data, trails, and hit effects.
 - **Tempo -/+** adjusts the transport tempo.
@@ -151,13 +151,13 @@ src/
 1. Run `npm install`.
 2. Run `npm run build`.
 3. Run `npm run dev` and open the local URL in a desktop browser or mobile preview.
-4. Tap **Start Audio** once, then verify sound after **Launch Ball**.
+4. Tap **Audio** once, then verify sound after **Ball**.
 5. Enter **Performance Mode**, then exit back to the Lab view.
 6. Drag pads around the playfield and confirm moved pads still trigger.
-7. Try **Launch Ball**, **Launch 3**, **Marble Rain**, **Stop Balls**, and **Clear**.
+7. Try **Ball**, **Launch 3**, **Rain**, **Stop**, and **Clear**.
 8. Capture a loop, stop the balls, and confirm the frozen loop keeps playing.
-9. Try **Gravity Flip**, **Slow-Mo**, and **Orbit Chaos** and watch their countdowns reset.
-10. Use **Mutate Pattern** and confirm pad labels/colors change with a toast, then **Reset Pattern** and confirm the previous pad layout returns.
+9. Try **Gravity**, **Slow-Mo**, and **Orbit** and watch their countdowns reset.
+10. Use **Mutate** and confirm pad labels/colors change with a toast, then **Reset** and confirm the previous pad layout returns.
 11. In ChatGPT MIDI Lab, use the example JSON, load it, apply it, and verify Performance Mode still works after import.
 12. Check the browser console for runtime errors.
 
