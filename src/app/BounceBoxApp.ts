@@ -29,6 +29,7 @@ export class BounceBoxApp {
   private tempoValueNode!: HTMLElement;
   private beatNode!: HTMLElement;
   private effectReadoutNode!: HTMLElement;
+  private toastNode!: HTMLElement;
   private midiLab!: MidiLabPanel;
   private padInteraction!: PadInteraction;
   private patternIndex = 0;
@@ -41,10 +42,13 @@ export class BounceBoxApp {
   private ripples: Ripple[] = [];
   private trails = new Map<number, TrailPoint[]>();
   private padNoteCursor = new Map<string, number>();
+  private mutatedPadPulseUntil = new Map<string, number>();
   private latestSnapshot: PhysicsSnapshot = { balls: [], pads: [] };
   private draggingPadId: string | null = null;
+  private hasActiveMutation = false;
   private effectWasActive = false;
   private shakeUntil = 0;
+  private toastTimer: number | null = null;
   private status: AppStatus = {
     tempo: this.physics.tempo,
     key: this.physics.key,
@@ -93,6 +97,7 @@ export class BounceBoxApp {
           <div class="scanline" aria-hidden="true"></div>
           <div class="beat-grid" aria-label="Beat and bar indicator"></div>
           <div class="effect-readout" data-effect-readout hidden></div>
+          <div class="toast" data-toast hidden></div>
         </section>
 
         <section class="status-panel" aria-live="polite"></section>
@@ -100,20 +105,32 @@ export class BounceBoxApp {
         <section class="midi-lab" data-midi-lab></section>
 
         <nav class="controls" aria-label="Groovebox controls">
-          <button type="button" data-action="audio">Start Audio</button>
-          <button type="button" data-action="launch">Launch Ball</button>
-          <button type="button" data-action="launch-3">Launch 3</button>
-          <button type="button" data-action="rain">Marble Rain</button>
-          <button type="button" data-action="pattern">Generate Pattern</button>
-          <button type="button" data-action="capture">Capture Loop</button>
-          <button type="button" data-action="stop-balls">Stop Balls</button>
-          <button type="button" data-action="effect" data-effect="gravity-flip">Gravity Flip</button>
-          <button type="button" data-action="effect" data-effect="slow-mo">Slow-Mo</button>
-          <button type="button" data-action="effect" data-effect="orbit-chaos">Orbit Chaos</button>
-          <button type="button" data-action="mutate">Mutate Pattern</button>
-          <button type="button" data-action="reset-pattern">Reset Pattern</button>
-          <button type="button" data-action="clear-loop">Clear Loop</button>
-          <button type="button" data-action="clear">Clear</button>
+          <div class="control-group control-group-launch">
+            <small>Launch</small>
+            <button type="button" data-action="audio">Start Audio</button>
+            <button type="button" data-action="launch">Launch Ball</button>
+            <button type="button" data-action="launch-3">Launch 3</button>
+            <button type="button" data-action="rain">Marble Rain</button>
+          </div>
+          <div class="control-group control-group-groove">
+            <small>Groove</small>
+            <button type="button" data-action="capture">Capture Loop</button>
+            <button type="button" data-action="stop-balls">Stop Balls</button>
+            <button type="button" data-action="clear-loop">Clear Loop</button>
+            <button type="button" data-action="clear">Clear</button>
+          </div>
+          <div class="control-group control-group-fx">
+            <small>FX</small>
+            <button type="button" data-action="effect" data-effect="gravity-flip">Gravity Flip</button>
+            <button type="button" data-action="effect" data-effect="slow-mo">Slow-Mo</button>
+            <button type="button" data-action="effect" data-effect="orbit-chaos">Orbit Chaos</button>
+          </div>
+          <div class="control-group control-group-pattern">
+            <small>Pattern</small>
+            <button type="button" data-action="pattern">Generate</button>
+            <button type="button" data-action="mutate">Mutate</button>
+            <button type="button" data-action="reset-pattern">Reset</button>
+          </div>
         </nav>
       </main>
     `;
@@ -130,6 +147,7 @@ export class BounceBoxApp {
     const tempoValueNode = this.root.querySelector<HTMLElement>('[data-tempo-value]');
     const beatNode = this.root.querySelector<HTMLElement>('.beat-grid');
     const effectReadoutNode = this.root.querySelector<HTMLElement>('[data-effect-readout]');
+    const toastNode = this.root.querySelector<HTMLElement>('[data-toast]');
     const midiLabNode = this.root.querySelector<HTMLElement>('[data-midi-lab]');
 
     if (
@@ -145,6 +163,7 @@ export class BounceBoxApp {
       !tempoValueNode ||
       !beatNode ||
       !effectReadoutNode ||
+      !toastNode ||
       !midiLabNode
     ) {
       throw new Error('BounceBox UI failed to initialize.');
@@ -162,6 +181,7 @@ export class BounceBoxApp {
     this.tempoValueNode = tempoValueNode;
     this.beatNode = beatNode;
     this.effectReadoutNode = effectReadoutNode;
+    this.toastNode = toastNode;
     this.midiLab = new MidiLabPanel(midiLabNode, (pattern) => this.applyImportedPattern(pattern));
     this.padInteraction = new PadInteraction({
       canvas: this.canvas,
@@ -318,6 +338,7 @@ export class BounceBoxApp {
     if (source === 'builtin' || source === 'imported' || source === 'reset') {
       this.mutationBasePattern = clonePattern(pattern);
       this.mutationCount = 0;
+      this.hasActiveMutation = false;
     }
 
     this.status.patternName = pattern.name;
@@ -330,15 +351,35 @@ export class BounceBoxApp {
   }
 
   private mutateCurrentPattern(): void {
+    if (!this.hasActiveMutation) {
+      this.mutationBasePattern = clonePattern(this.currentPattern);
+    }
+
     this.mutationCount += 1;
-    const mutatedPattern = mutatePattern(this.currentPattern, this.mutationCount);
-    this.activatePattern(mutatedPattern, 'mutation');
-    this.status.lastTriggeredNote = 'Pattern mutated';
+    const result = mutatePattern(this.currentPattern, this.mutationCount);
+
+    if (!result.changed) {
+      this.showToast(result.summary);
+      this.status.lastTriggeredNote = 'No mutation target';
+      return;
+    }
+
+    this.hasActiveMutation = true;
+    this.activatePattern(result.pattern, 'mutation');
+    this.pulsePads(result.changedPadIds);
+    this.flashActionButton('mutate');
+    this.status.lastTriggeredNote = result.summary.replace('Pattern mutated: ', '').replace('.', '');
+    this.showToast(result.summary);
+    this.syncStatus();
   }
 
   private resetMutatedPattern(): void {
     this.activatePattern(clonePattern(this.mutationBasePattern), 'reset');
+    this.mutatedPadPulseUntil.clear();
     this.status.lastTriggeredNote = 'Pattern reset';
+    this.flashActionButton('reset-pattern');
+    this.showToast('Pattern reset: restored pre-mutation pads.');
+    this.syncStatus();
   }
 
   private setPerformanceMode(enabled: boolean): void {
@@ -451,7 +492,54 @@ export class BounceBoxApp {
       ...this.currentPattern,
       pads: this.currentPattern.pads.map((pad) => (pad.id === padId ? movedPad : pad))
     };
+
+    if (!this.hasActiveMutation) {
+      this.mutationBasePattern = clonePattern(this.currentPattern);
+    }
+
     this.latestSnapshot = this.physics.getSnapshot();
+  }
+
+  private pulsePads(padIds: string[]): void {
+    const now = performance.now();
+    const pulseUntil = now + 900;
+
+    for (const padId of padIds) {
+      this.mutatedPadPulseUntil.set(padId, pulseUntil);
+    }
+
+    window.setTimeout(() => {
+      for (const padId of padIds) {
+        if ((this.mutatedPadPulseUntil.get(padId) ?? 0) <= performance.now()) {
+          this.mutatedPadPulseUntil.delete(padId);
+        }
+      }
+    }, 950);
+  }
+
+  private showToast(message: string): void {
+    if (this.toastTimer) {
+      window.clearTimeout(this.toastTimer);
+    }
+
+    this.toastNode.hidden = false;
+    this.toastNode.textContent = message;
+    this.toastNode.classList.add('is-visible');
+    this.toastTimer = window.setTimeout(() => {
+      this.toastNode.classList.remove('is-visible');
+      this.toastNode.hidden = true;
+      this.toastTimer = null;
+    }, 2200);
+  }
+
+  private flashActionButton(action: string): void {
+    const button = this.root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);
+    if (!button) {
+      return;
+    }
+
+    button.classList.add('is-flash');
+    window.setTimeout(() => button.classList.remove('is-flash'), 520);
   }
 
   private resizeCanvas(): void {
@@ -570,19 +658,20 @@ export class BounceBoxApp {
   private drawPads(ctx: CanvasRenderingContext2D, snapshot: PhysicsSnapshot): void {
     for (const pad of snapshot.pads) {
       const isDragging = this.draggingPadId === pad.id;
-      const glow = isDragging ? 40 : pad.isActive ? 34 : pad.kind === 'portal' ? 18 : 12;
+      const isMutatedPulse = (this.mutatedPadPulseUntil.get(pad.id) ?? 0) > performance.now();
+      const glow = isDragging || isMutatedPulse ? 44 : pad.isActive ? 34 : pad.kind === 'portal' ? 18 : 12;
 
       ctx.save();
       ctx.shadowBlur = glow;
       ctx.shadowColor = pad.color;
       ctx.fillStyle = pad.color;
-      ctx.globalAlpha = isDragging ? 0.42 : pad.isActive ? 0.38 : 0.18;
+      ctx.globalAlpha = isDragging || isMutatedPulse ? 0.46 : pad.isActive ? 0.38 : 0.18;
       ctx.beginPath();
-      ctx.arc(pad.x, pad.y, pad.radius * (isDragging ? 1.58 : pad.kind === 'portal' ? 1.45 : 1.28), 0, Math.PI * 2);
+      ctx.arc(pad.x, pad.y, pad.radius * (isDragging || isMutatedPulse ? 1.62 : pad.kind === 'portal' ? 1.45 : 1.28), 0, Math.PI * 2);
       ctx.fill();
 
       ctx.globalAlpha = 1;
-      ctx.lineWidth = isDragging || pad.isActive ? 3 : 2;
+      ctx.lineWidth = isDragging || isMutatedPulse || pad.isActive ? 3 : 2;
       ctx.strokeStyle = pad.color;
       ctx.beginPath();
       ctx.arc(pad.x, pad.y, pad.radius, 0, Math.PI * 2);
@@ -596,12 +685,12 @@ export class BounceBoxApp {
 
       ctx.shadowBlur = 0;
       ctx.fillStyle = '#f8fafc';
-      ctx.font = '800 11px Inter, system-ui, sans-serif';
+      ctx.font = `${isMutatedPulse ? '900' : '800'} ${pad.radius > 24 ? 12 : 11}px Inter, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(pad.label, pad.x, pad.y - 5);
       ctx.fillStyle = '#cbd5e1';
-      ctx.font = '700 10px Inter, system-ui, sans-serif';
+      ctx.font = `700 ${pad.radius > 24 ? 11 : 10}px Inter, system-ui, sans-serif`;
       ctx.fillText(pad.kind === 'drum' ? pad.role.toUpperCase() : pad.note, pad.x, pad.y + 8);
       ctx.restore();
     }

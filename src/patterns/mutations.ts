@@ -1,5 +1,12 @@
 import type { DemoPattern, InstrumentRole, NoteName, PadPattern } from '../types';
 
+export interface MutationResult {
+  pattern: DemoPattern;
+  changed: boolean;
+  changedPadIds: string[];
+  summary: string;
+}
+
 export function clonePattern(pattern: DemoPattern): DemoPattern {
   return {
     ...pattern,
@@ -16,24 +23,50 @@ export function clonePattern(pattern: DemoPattern): DemoPattern {
   };
 }
 
-export function mutatePattern(pattern: DemoPattern, mutationIndex: number): DemoPattern {
+export function mutatePattern(pattern: DemoPattern, mutationIndex: number): MutationResult {
   const mutated = clonePattern(pattern);
   mutated.id = `${pattern.id}-mutation-${mutationIndex}`;
-  mutated.name = pattern.name.includes('Mutated') ? pattern.name : `${pattern.name} Mutated`;
+  const changedPadIds = new Set<string>();
+  const changes: string[] = [];
 
-  rotateMelodicPadNotes(mutated, mutationIndex);
-  shiftOnePadOctave(mutated, mutationIndex);
-  changeOneRole(mutated, mutationIndex);
-  varySeedVelocities(mutated, mutationIndex);
+  if (rotateMelodicPadNotes(mutated, mutationIndex, changedPadIds)) {
+    changes.push('notes rotated');
+  }
 
-  return mutated;
+  if (shiftOnePadOctave(mutated, mutationIndex, changedPadIds)) {
+    changes.push(mutationIndex % 2 === 0 ? 'octave lift' : 'octave drop');
+  }
+
+  if (changeOneRole(mutated, mutationIndex, changedPadIds)) {
+    changes.push('role flip');
+  }
+
+  if (recolorChangedPads(mutated, mutationIndex, changedPadIds)) {
+    changes.push('pad glow');
+  }
+
+  if (varySeedVelocities(mutated, mutationIndex)) {
+    changes.push('accent shift');
+  }
+
+  const changed = changes.length > 0;
+  if (changed) {
+    mutated.name = pattern.name.includes('Mutated') ? pattern.name : `${pattern.name} Mutated`;
+  }
+
+  return {
+    pattern: mutated,
+    changed,
+    changedPadIds: [...changedPadIds],
+    summary: changed ? `Pattern mutated: ${changes.slice(0, 3).join(' + ')}.` : 'Pattern mutation had no safe targets.'
+  };
 }
 
-function rotateMelodicPadNotes(pattern: DemoPattern, mutationIndex: number): void {
+function rotateMelodicPadNotes(pattern: DemoPattern, mutationIndex: number, changedPadIds: Set<string>): boolean {
   const pads = pattern.pads.filter((pad) => !isDrumRole(pad.role) && (pad.notes?.length ?? 0) > 1);
 
   if (pads.length < 2) {
-    return;
+    return false;
   }
 
   const firstIndex = mutationIndex % pads.length;
@@ -43,15 +76,20 @@ function rotateMelodicPadNotes(pattern: DemoPattern, mutationIndex: number): voi
 
   pads[firstIndex].notes = secondNotes;
   pads[firstIndex].note = secondNotes[0];
+  pads[firstIndex].label = labelFromPad(pads[firstIndex]);
   pads[secondIndex].notes = firstNotes;
   pads[secondIndex].note = firstNotes[0];
+  pads[secondIndex].label = labelFromPad(pads[secondIndex]);
+  changedPadIds.add(pads[firstIndex].id);
+  changedPadIds.add(pads[secondIndex].id);
+  return true;
 }
 
-function shiftOnePadOctave(pattern: DemoPattern, mutationIndex: number): void {
+function shiftOnePadOctave(pattern: DemoPattern, mutationIndex: number, changedPadIds: Set<string>): boolean {
   const pads = pattern.pads.filter((pad) => !isDrumRole(pad.role));
 
   if (pads.length === 0) {
-    return;
+    return false;
   }
 
   const pad = pads[mutationIndex % pads.length];
@@ -60,31 +98,68 @@ function shiftOnePadOctave(pattern: DemoPattern, mutationIndex: number): void {
 
   pad.notes = notes;
   pad.note = notes[0];
+  pad.label = labelFromPad(pad);
+  changedPadIds.add(pad.id);
+  return true;
 }
 
-function changeOneRole(pattern: DemoPattern, mutationIndex: number): void {
+function changeOneRole(pattern: DemoPattern, mutationIndex: number, changedPadIds: Set<string>): boolean {
   const candidates = pattern.pads.filter((pad) => pad.role === 'lead' || pad.role === 'pluck' || pad.role === 'arp' || pad.role === 'fx');
 
   if (candidates.length === 0) {
-    return;
+    return false;
   }
 
   const pad = candidates[mutationIndex % candidates.length];
   const nextRole = getNextRole(pad.role);
   pad.role = nextRole;
   pad.kind = nextRole === 'arp' || nextRole === 'fx' ? 'portal' : 'note';
+  pad.label = labelFromPad(pad);
+  changedPadIds.add(pad.id);
 
   const instrument = pattern.instruments.find((item) => item.id === pad.instrumentId);
   if (instrument) {
     instrument.role = nextRole;
   }
+
+  return true;
 }
 
-function varySeedVelocities(pattern: DemoPattern, mutationIndex: number): void {
+function varySeedVelocities(pattern: DemoPattern, mutationIndex: number): boolean {
+  if (pattern.seedSteps.length === 0) {
+    return false;
+  }
+
   pattern.seedSteps = pattern.seedSteps.map((step, index) => ({
     ...step,
     velocity: clamp(step.velocity + (((index + mutationIndex) % 3) - 1) * 0.06, 0.28, 1)
   }));
+
+  return true;
+}
+
+function recolorChangedPads(pattern: DemoPattern, mutationIndex: number, changedPadIds: Set<string>): boolean {
+  if (changedPadIds.size === 0) {
+    return false;
+  }
+
+  const palette = ['#22d3ee', '#f472b6', '#a78bfa', '#34d399', '#facc15', '#fb7185', '#60a5fa'];
+
+  pattern.pads = pattern.pads.map((pad, index) => {
+    if (!changedPadIds.has(pad.id)) {
+      return pad;
+    }
+
+    const color = palette[(mutationIndex + index) % palette.length];
+    const instrument = pattern.instruments.find((item) => item.id === pad.instrumentId);
+    if (instrument) {
+      instrument.color = color;
+    }
+
+    return { ...pad, color };
+  });
+
+  return true;
 }
 
 function getNextRole(role: InstrumentRole): InstrumentRole {
@@ -117,6 +192,22 @@ function shiftOctave(note: NoteName, direction: number): NoteName {
   const [, pitch, octaveText] = match;
   const octave = clamp(Number(octaveText) + direction, 1, 5);
   return `${pitch}${octave}` as NoteName;
+}
+
+function labelFromPad(pad: PadPattern): string {
+  if (pad.kind === 'drum') {
+    return pad.label;
+  }
+
+  if (pad.kind === 'portal' || pad.role === 'arp' || pad.role === 'fx') {
+    return 'ARP';
+  }
+
+  if (pad.kind === 'chord' || pad.role === 'pad' || pad.role === 'chord') {
+    return `${pad.note.replace(/[0-9]/g, '')}*`;
+  }
+
+  return pad.note.replace(/[0-9]/g, '').slice(0, 4);
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -13,8 +13,9 @@ Performance features:
 - Drag pads with touch or mouse; pads stay inside the playfield and continue triggering collisions.
 - **Marble Rain** drops a controlled stream of balls from the top.
 - **Gravity Flip**, **Slow-Mo**, and **Orbit Chaos** are timed musical physics effects with visible countdowns.
-- **Mutate Pattern** safely changes the active pattern by rotating notes, shifting octaves, changing a melodic role, and varying seed velocities.
-- **Reset Pattern** restores the pattern state from before mutation.
+- **Mutate Pattern** safely changes the active pattern by rotating notes, shifting octaves, changing a melodic role, varying accents, and pulsing changed pads.
+- **Reset Pattern** restores the exact pattern and pad layout from before mutation.
+- Controls are grouped into Launch, Groove, FX, and Pattern sections for one-handed mobile play.
 - Stronger hit ripples, speed-reactive ball trails, pad glow states, beat pulse, and bigger feedback for kick/snare/portal hits.
 
 ## ChatGPT MIDI Lab
@@ -156,7 +157,7 @@ src/
 7. Try **Launch Ball**, **Launch 3**, **Marble Rain**, **Stop Balls**, and **Clear**.
 8. Capture a loop, stop the balls, and confirm the frozen loop keeps playing.
 9. Try **Gravity Flip**, **Slow-Mo**, and **Orbit Chaos** and watch their countdowns reset.
-10. Use **Mutate Pattern**, then **Reset Pattern**.
+10. Use **Mutate Pattern** and confirm pad labels/colors change with a toast, then **Reset Pattern** and confirm the previous pad layout returns.
 11. In ChatGPT MIDI Lab, use the example JSON, load it, apply it, and verify Performance Mode still works after import.
 12. Check the browser console for runtime errors.
 
