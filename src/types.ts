@@ -3,7 +3,8 @@ type Accidental = '' | '#' | 'b';
 type Octave = '1' | '2' | '3' | '4' | '5';
 
 export type NoteName = `${NoteLetter}${Accidental}${Octave}`;
-export type InstrumentRole = 'kick' | 'snare' | 'hihat' | 'bass' | 'pluck' | 'pad' | 'portal';
+export type ImportedInstrumentRole = 'kick' | 'snare' | 'hat' | 'bass' | 'lead' | 'pluck' | 'pad' | 'chord' | 'arp' | 'fx';
+export type InstrumentRole = ImportedInstrumentRole | 'hihat' | 'portal';
 export type PadKind = 'drum' | 'bass' | 'note' | 'chord' | 'portal';
 
 export interface PadPattern {
@@ -98,3 +99,47 @@ export interface GrooveEvent {
   step: number;
   recordedAt: number;
 }
+
+export interface ImportedMidiNote {
+  time: number;
+  note: string;
+  length: number;
+  velocity: number;
+}
+
+export interface ImportedMidiTrack {
+  name: string;
+  instrument: ImportedInstrumentRole;
+  notes: ImportedMidiNote[];
+}
+
+export interface ImportedMidiPattern {
+  name: string;
+  tempo: number;
+  key: string;
+  swing?: number;
+  tracks: ImportedMidiTrack[];
+}
+
+export interface ImportedPatternSummary {
+  name: string;
+  tempo: number;
+  key: string;
+  trackCount: number;
+  instruments: ImportedInstrumentRole[];
+  noteCount: number;
+}
+
+export type ImportPatternResult =
+  | {
+      ok: true;
+      pattern: DemoPattern;
+      source: ImportedMidiPattern;
+      summary: ImportedPatternSummary;
+      warnings: string[];
+    }
+  | {
+      ok: false;
+      errors: string[];
+      warnings: string[];
+    };

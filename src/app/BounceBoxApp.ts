@@ -1,5 +1,6 @@
 import { AudioEngine } from '../audio/audioEngine';
 import { Transport } from '../audio/transport';
+import { MidiLabPanel } from './MidiLabPanel';
 import { demoPatterns } from '../patterns/demoPatterns';
 import { LoopRecorder } from '../patterns/loopRecorder';
 import { PhysicsWorld } from '../physics/physicsWorld';
@@ -35,6 +36,7 @@ export class BounceBoxApp {
   private patternNode!: HTMLElement;
   private tempoValueNode!: HTMLElement;
   private beatNode!: HTMLElement;
+  private midiLab!: MidiLabPanel;
   private patternIndex = 0;
   private currentPattern: DemoPattern = demoPatterns[0];
   private animationFrame = 0;
@@ -42,6 +44,7 @@ export class BounceBoxApp {
   private lastStatusRenderAt = 0;
   private ripples: Ripple[] = [];
   private trails = new Map<number, TrailPoint[]>();
+  private padNoteCursor = new Map<string, number>();
   private shakeUntil = 0;
   private status: AppStatus = {
     tempo: this.physics.tempo,
@@ -90,6 +93,8 @@ export class BounceBoxApp {
 
         <section class="status-panel" aria-live="polite"></section>
 
+        <section class="midi-lab" data-midi-lab></section>
+
         <nav class="controls" aria-label="Groovebox controls">
           <button type="button" data-action="audio">Start Audio</button>
           <button type="button" data-action="launch">Launch Ball</button>
@@ -112,8 +117,19 @@ export class BounceBoxApp {
     const patternNode = this.root.querySelector<HTMLElement>('[data-pattern-name]');
     const tempoValueNode = this.root.querySelector<HTMLElement>('[data-tempo-value]');
     const beatNode = this.root.querySelector<HTMLElement>('.beat-grid');
+    const midiLabNode = this.root.querySelector<HTMLElement>('[data-midi-lab]');
 
-    if (!canvas || !context || !statusNode || !audioButton || !captureButton || !patternNode || !tempoValueNode || !beatNode) {
+    if (
+      !canvas ||
+      !context ||
+      !statusNode ||
+      !audioButton ||
+      !captureButton ||
+      !patternNode ||
+      !tempoValueNode ||
+      !beatNode ||
+      !midiLabNode
+    ) {
       throw new Error('BounceBox UI failed to initialize.');
     }
 
@@ -125,8 +141,10 @@ export class BounceBoxApp {
     this.patternNode = patternNode;
     this.tempoValueNode = tempoValueNode;
     this.beatNode = beatNode;
+    this.midiLab = new MidiLabPanel(midiLabNode, (pattern) => this.applyImportedPattern(pattern));
 
     this.bindControls();
+    this.midiLab.mount();
     this.buildBeatGrid();
     this.resizeCanvas();
     window.addEventListener('resize', () => this.resizeCanvas());
@@ -225,12 +243,29 @@ export class BounceBoxApp {
     this.transport.setTempo(this.currentPattern.tempo);
     this.loopRecorder.clearLoop();
     this.ripples = [];
+    this.padNoteCursor.clear();
     this.status.patternName = this.currentPattern.name;
     this.status.tempo = this.currentPattern.tempo;
     this.status.key = this.currentPattern.key;
     this.status.lastTriggeredNote = this.currentPattern.name;
     this.updateCaptureButton();
     this.renderPatternHeader();
+  }
+
+  private applyImportedPattern(pattern: DemoPattern): void {
+    this.currentPattern = pattern;
+    this.physics.loadPattern(pattern);
+    this.transport.setTempo(pattern.tempo);
+    this.loopRecorder.clearLoop();
+    this.ripples = [];
+    this.padNoteCursor.clear();
+    this.status.patternName = pattern.name;
+    this.status.tempo = pattern.tempo;
+    this.status.key = pattern.key;
+    this.status.lastTriggeredNote = `Imported ${pattern.name}`;
+    this.updateCaptureButton();
+    this.renderPatternHeader();
+    this.syncStatus();
   }
 
   private toggleCapture(): void {
@@ -262,19 +297,39 @@ export class BounceBoxApp {
   }
 
   private createGrooveEvent(pad: PadPattern, speed: number, step: number, now: number): GrooveEvent {
+    const noteSelection = this.choosePadNotes(pad);
+
     return {
       id: `${pad.id}-${now.toFixed(0)}`,
       padId: pad.id,
       instrumentId: pad.instrumentId,
       role: pad.role,
       kind: pad.kind,
-      note: pad.note,
-      notes: pad.notes,
+      note: noteSelection.note,
+      notes: noteSelection.notes,
       color: pad.color,
       velocity: Math.min(1, Math.max(0.35, speed / 10)),
       step,
       recordedAt: now
     };
+  }
+
+  private choosePadNotes(pad: PadPattern): Pick<GrooveEvent, 'note' | 'notes'> {
+    const notes = pad.notes?.length ? pad.notes : [pad.note];
+
+    if (pad.kind === 'chord' || pad.role === 'pad' || pad.role === 'chord') {
+      return { note: notes[0], notes };
+    }
+
+    if (pad.kind === 'portal' || pad.role === 'portal' || pad.role === 'arp' || pad.role === 'fx') {
+      return { note: notes[0], notes };
+    }
+
+    const cursor = this.padNoteCursor.get(pad.id) ?? 0;
+    const note = notes[cursor % notes.length];
+    this.padNoteCursor.set(pad.id, cursor + 1);
+
+    return { note };
   }
 
   private addRipple(pad: PadPattern, speed: number, recorded: boolean): void {
@@ -406,7 +461,7 @@ export class BounceBoxApp {
       ctx.arc(pad.x, pad.y, pad.radius, 0, Math.PI * 2);
       ctx.stroke();
 
-    if (pad.kind === 'portal') {
+      if (pad.kind === 'portal') {
         ctx.beginPath();
         ctx.arc(pad.x, pad.y, pad.radius * (0.58 + Math.sin(performance.now() / 180) * 0.05), 0, Math.PI * 2);
         ctx.stroke();
@@ -531,12 +586,23 @@ export class BounceBoxApp {
   }
 
   private renderStatus(): void {
-    this.statusNode.innerHTML = `
-      <span><strong>${this.status.key}</strong><small>key</small></span>
-      <span><strong>${this.status.activeBalls}</strong><small>balls</small></span>
-      <span><strong>${this.status.loopEvents}</strong><small>${this.status.loopFrozen ? 'looped' : 'captured'}</small></span>
-      <span><strong>${this.status.lastTriggeredNote}</strong><small>last hit</small></span>
-    `;
+    this.statusNode.replaceChildren(
+      this.createStatusItem(this.status.key, 'key'),
+      this.createStatusItem(String(this.status.activeBalls), 'balls'),
+      this.createStatusItem(String(this.status.loopEvents), this.status.loopFrozen ? 'looped' : 'captured'),
+      this.createStatusItem(this.status.lastTriggeredNote, 'last hit')
+    );
+  }
+
+  private createStatusItem(value: string, label: string): HTMLElement {
+    const item = document.createElement('span');
+    const strong = document.createElement('strong');
+    const small = document.createElement('small');
+
+    strong.textContent = value;
+    small.textContent = label;
+    item.append(strong, small);
+    return item;
   }
 
   private renderPatternHeader(): void {

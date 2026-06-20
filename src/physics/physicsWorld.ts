@@ -45,6 +45,8 @@ export class PhysicsWorld {
     this.tempo = pattern.tempo;
     this.key = pattern.key;
     this.padConfigById = new Map(pattern.pads.map((pad) => [pad.id, pad]));
+    this.lastPadHitAt.clear();
+    this.activePadUntil.clear();
     this.rebuildStaticBodies();
   }
 

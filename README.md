@@ -1,8 +1,86 @@
 # BounceBox
 
-BounceBox is a mobile-first physics groovebox prototype. Bouncing balls collide with neon pads to trigger drums, bass, plucks, chords, and portal arpeggios, turning the playfield into a tactile loop-building instrument.
+BounceBox is a mobile-first physics groovebox. Bouncing balls collide with neon pads to trigger drums, bass, plucks, chords, and portal arpeggios, turning the canvas into a tactile loop-building instrument.
 
-The current Pass 2 build keeps the clean Vite + TypeScript foundation and adds a simple musical transport, 4-bar loop capture, role-based pads, richer Web Audio synthesis, and safer mobile controls.
+The app is a frontend-only Vite + TypeScript project. It uses Canvas for the playfield, Matter.js for physics, and a small Web Audio synth engine for sound. There is no backend, authentication, database, or OpenAI API integration.
+
+## ChatGPT MIDI Lab
+
+Pass 3 adds **ChatGPT MIDI Lab**, a paste-in workflow for turning ChatGPT-generated MIDI-style JSON into BounceBox pads and instruments.
+
+How it works:
+
+1. Ask ChatGPT for a BounceBox MIDI JSON pattern.
+2. Paste the JSON into the **ChatGPT MIDI Lab** panel.
+3. Click **Load JSON** to validate it.
+4. Review the summary: pattern name, tempo, key, tracks, instruments, and event count.
+5. Click **Apply to Playfield**.
+6. Launch balls and play the imported pattern as a physics instrument.
+
+Mini prompt:
+
+```text
+Create a BounceBox MIDI JSON pattern in C minor with drums, bass, lead, and weird playful sound design.
+```
+
+The importer validates malformed JSON, missing fields, unsupported instruments, and unsafe values. Tempo, velocity, note length, timing, and octave values are clamped into safe playable ranges.
+
+Supported instruments:
+
+```text
+kick, snare, hat, bass, lead, pluck, pad, chord, arp, fx
+```
+
+## Example JSON
+
+```json
+{
+  "name": "Skullstep Playground",
+  "tempo": 112,
+  "key": "C minor",
+  "swing": 0.12,
+  "tracks": [
+    {
+      "name": "Kick Engine",
+      "instrument": "kick",
+      "notes": [
+        { "time": 0, "note": "C1", "length": 0.25, "velocity": 0.95 },
+        { "time": 1, "note": "C1", "length": 0.25, "velocity": 0.9 }
+      ]
+    },
+    {
+      "name": "Bass Marbles",
+      "instrument": "bass",
+      "notes": [
+        { "time": 0, "note": "C2", "length": 0.5, "velocity": 0.8 },
+        { "time": 1.5, "note": "Eb2", "length": 0.5, "velocity": 0.75 }
+      ]
+    },
+    {
+      "name": "Playground Lead",
+      "instrument": "lead",
+      "notes": [
+        { "time": 0.75, "note": "C4", "length": 0.25, "velocity": 0.62 },
+        { "time": 2.25, "note": "Eb4", "length": 0.25, "velocity": 0.58 },
+        { "time": 3, "note": "G4", "length": 0.25, "velocity": 0.64 }
+      ]
+    }
+  ]
+}
+```
+
+## Controls
+
+- **Start Audio** unlocks the Web Audio context.
+- **Launch Ball** adds one bouncing ball to the canvas.
+- **Launch 3** adds three balls with a short stagger.
+- **Generate Pattern** cycles through Neon Bounce, Skullstep, and Space Marbles.
+- **Chaos** briefly changes gravity and nudges active balls.
+- **Capture Loop** freezes the last 4 bars of collision hits and replays them on the grid.
+- **Stop Balls** removes active balls while a frozen groove keeps playing.
+- **Clear Loop** clears captured loop data.
+- **Clear** removes active balls, loop data, trails, and hit effects.
+- **Tempo -/+** adjusts the transport tempo.
 
 ## Local Development
 
@@ -30,56 +108,26 @@ Preview the production build:
 npm run preview
 ```
 
-## Controls
-
-- **Start Audio** unlocks the Web Audio context.
-- **Launch Ball** adds one bouncing ball to the canvas.
-- **Launch 3** adds three balls with a short stagger.
-- **Generate Pattern** cycles through Neon Bounce, Skullstep, and Space Marbles.
-- **Chaos** briefly changes gravity and nudges active balls.
-- **Capture Loop** freezes the last 4 bars of collision hits and replays them on the grid.
-- **Stop Balls** removes active balls while a frozen groove keeps playing.
-- **Clear Loop** clears captured loop data.
-- **Clear** removes active balls, loop data, trails, and hit effects.
-- **Tempo -/+** adjusts the transport tempo.
-
-## Pass 2 Features
-
-- 4-bar transport with visible bar/beat and 16-step indicator.
-- Light collision quantization for musical timing while keeping hits responsive.
-- Loop recorder that captures recent pad hits as `GrooveEvent` data.
-- Distinct instrument roles: kick, snare, hi-hat, bass, pluck, pad/chord, and portal.
-- Pattern data shaped for future ChatGPT-generated MIDI JSON import.
-- Role-aware bumpers, portal arpeggios, hit ripples, ball trails, and subtle screen shake.
-- Mobile-first sticky control panel with safe-area padding.
-
 ## Project Structure
 
 ```text
 src/
   app/BounceBoxApp.ts       UI, canvas rendering, and app orchestration
-  audio/audioEngine.ts      Small Web Audio synth engine
+  app/MidiLabPanel.ts       ChatGPT MIDI Lab panel and UI state
+  audio/audioEngine.ts      Web Audio synth voices and output limiting
   audio/transport.ts        Tempo, bars, beats, and quantized steps
   physics/physicsWorld.ts   Matter.js world, balls, pads, and collisions
+  patterns/demoPatterns.ts  Built-in JSON-friendly patterns
+  patterns/importPattern.ts Paste-in JSON parser, validator, and mapper
   patterns/loopRecorder.ts  4-bar capture and frozen loop playback
-  patterns/demoPatterns.ts  JSON-friendly demo pattern data
-  types.ts                  Shared app and pattern types
+  types.ts                  Shared app, pattern, import, and transport types
 ```
-
-## Test Checklist
-
-1. Run `npm install`.
-2. Run `npm run build`.
-3. Run `npm run dev` and open the local URL on desktop or a phone.
-4. Tap **Start Audio** before expecting sound.
-5. Try **Launch Ball**, **Launch 3**, **Generate Pattern**, **Chaos**, **Capture Loop**, **Stop Balls**, **Clear Loop**, and **Clear**.
-6. Confirm the bottom controls remain reachable on a mobile browser and are not hidden behind the browser navigation area.
-7. Confirm the beat indicator advances, captured loops replay, and no console errors appear.
 
 ## Roadmap
 
-- Add paste/import for MIDI-style JSON patterns.
+- Add paste history and downloadable pattern JSON.
 - Add editable quantized pattern lanes.
 - Add optional sample slots for custom drums.
 - Add pad editing, scale selection, and saved scenes.
-- Improve generative launch modes and ball sequencing rules.
+- Add direct MIDI file export.
+- Add optional OpenAI API integration later, while keeping paste-in mode.

@@ -17,6 +17,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #app {
@@ -267,6 +271,198 @@ h1 {
   text-transform: uppercase;
 }
 
+.midi-lab {
+  min-width: 0;
+}
+
+.lab-panel {
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  border-radius: 8px;
+  background: rgba(8, 13, 31, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 12px 38px rgba(0, 0, 0, 0.24);
+  overflow: hidden;
+}
+
+.lab-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+  touch-action: manipulation;
+}
+
+.lab-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.lab-panel summary span {
+  color: #f8fafc;
+  font-size: 0.92rem;
+  font-weight: 900;
+}
+
+.lab-panel summary small {
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.lab-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.lab-hint {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.lab-body textarea {
+  width: 100%;
+  min-height: 146px;
+  max-height: 34dvh;
+  resize: vertical;
+  border: 1px solid rgba(103, 232, 249, 0.2);
+  border-radius: 8px;
+  padding: 11px;
+  background: rgba(2, 6, 23, 0.78);
+  color: #e5f7ff;
+  font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  outline: none;
+  box-shadow: inset 0 0 22px rgba(0, 0, 0, 0.28);
+}
+
+.lab-body textarea:focus {
+  border-color: rgba(103, 232, 249, 0.56);
+  box-shadow:
+    inset 0 0 22px rgba(0, 0, 0, 0.28),
+    0 0 18px rgba(34, 211, 238, 0.14);
+}
+
+.lab-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lab-actions button,
+.mini-prompt button {
+  min-height: 42px;
+  padding: 9px 8px;
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, 0.24), rgba(244, 114, 182, 0.18)),
+    #0f172a;
+  font-size: 0.78rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.lab-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.lab-feedback {
+  min-height: 36px;
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.lab-feedback.is-idle {
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.lab-feedback.is-success {
+  background: rgba(20, 83, 45, 0.34);
+  color: #bbf7d0;
+}
+
+.lab-feedback.is-error {
+  background: rgba(127, 29, 29, 0.34);
+  color: #fecaca;
+}
+
+.lab-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.lab-summary span,
+.mini-prompt {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(2, 6, 23, 0.48);
+}
+
+.lab-summary small,
+.mini-prompt small {
+  display: block;
+  color: #94a3b8;
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.lab-summary strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  color: #f8fafc;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-summary p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #fde68a;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.mini-prompt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.mini-prompt small {
+  grid-column: 1 / -1;
+}
+
+.mini-prompt code {
+  overflow-wrap: anywhere;
+  color: #a5f3fc;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.mini-prompt button {
+  white-space: nowrap;
+}
+
 .controls {
   position: sticky;
   bottom: env(safe-area-inset-bottom);
@@ -333,6 +529,10 @@ h1 {
   .status-panel strong {
     font-size: 0.88rem;
   }
+
+  .lab-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-height: 740px) {
@@ -352,5 +552,14 @@ h1 {
   .controls button {
     min-height: 42px;
     padding: 8px 6px;
+  }
+
+  .lab-panel:not([open]) summary {
+    min-height: 42px;
+    padding-block: 9px;
+  }
+
+  .lab-body textarea {
+    min-height: 118px;
   }
 }

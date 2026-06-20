@@ -91,7 +91,7 @@ export class AudioEngine {
       return;
     }
 
-    if (options.role === 'hihat') {
+    if (options.role === 'hihat' || options.role === 'hat') {
       this.playHat(when, velocity);
       return;
     }
@@ -101,12 +101,12 @@ export class AudioEngine {
       return;
     }
 
-    if (options.role === 'pad' || options.kind === 'chord') {
+    if (options.role === 'pad' || options.role === 'chord' || options.kind === 'chord') {
       this.playChord(options.notes ?? [options.note], when, velocity);
       return;
     }
 
-    if (options.role === 'portal') {
+    if (options.role === 'portal' || options.role === 'arp' || options.role === 'fx') {
       this.playArp(options.notes ?? [options.note], when, velocity);
       return;
     }
