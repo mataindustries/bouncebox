@@ -1,12 +1,23 @@
 # BounceBox
 
-BounceBox is a mobile-first physics groovebox. Bouncing balls collide with neon pads to trigger drums, bass, plucks, chords, and portal arpeggios, turning the canvas into a tactile loop-building instrument.
+BounceBox is a mobile-first physics groovebox. Bouncing balls collide with themed pads to trigger drums, bass, plucks, chords, and portal arpeggios, turning the canvas into a tactile loop-building instrument.
 
 The app is a frontend-only Vite + TypeScript project. It uses Canvas for the playfield, Matter.js for physics, and a small Web Audio synth engine for sound. There is no backend, authentication, database, or OpenAI API integration.
 
+## Themes
+
+BounceBox has a typed theme system that drives both DOM styling and Canvas rendering. Theme configs live in `src/theme/` and include CSS custom properties for the app shell plus canvas tokens for playfield background, grid, pads, labels, glows, ripples, trails, balls, and FX styling.
+
+Built-in skins:
+
+- **808 Heritage** is the default, original vintage groovebox-inspired skin with warm cream and charcoal surfaces, tactile rectangular controls, muted shadows, rubber-style canvas pads, and restrained red/orange/yellow LED energy. It does not use third-party drum-machine branding.
+- **Neon Lab** preserves the original bright BounceBox identity and keeps imported/pattern pad colors visible.
+
+Use the **Theme** selector in the header to switch themes. The selected theme is stored in local storage and restored after refresh.
+
 ## Performance Mode
 
-Pass 4 adds **Performance Mode**, a focused play surface for mobile performance. It hides the ChatGPT MIDI Lab, keeps the active pattern/tempo/key/ball/loop status visible, enlarges the main controls, and provides an **Exit Lab** button to return to the full editing view.
+Pass 4 adds **Performance Mode**, a focused play surface for mobile performance. It hides the ChatGPT MIDI Lab, keeps the active pattern/tempo/key/ball/loop status visible, enlarges the main controls, and provides an **Exit** button to return to the full editing view.
 
 Performance features:
 
@@ -17,6 +28,7 @@ Performance features:
 - **Reset Pattern** restores the exact pattern and pad layout from before mutation.
 - Controls are grouped into Launch, Groove, FX, and Pattern sections for one-handed mobile play.
 - Stronger hit ripples, speed-reactive ball trails, pad glow states, beat pulse, and bigger feedback for kick/snare/portal hits.
+- The active theme carries into Performance Mode, including the compact theme selector and themed playfield rendering.
 
 ## ChatGPT MIDI Lab
 
@@ -28,7 +40,7 @@ How it works:
 2. Paste the JSON into the **ChatGPT MIDI Lab** panel.
 3. Click **Load JSON** to validate it.
 4. Review the summary: pattern name, tempo, key, tracks, instruments, and event count.
-5. Click **Apply to Playfield**.
+5. Click **Apply**.
 6. Launch balls and play the imported pattern as a physics instrument.
 
 Mini prompt:
@@ -100,6 +112,7 @@ kick, snare, hat, bass, lead, pluck, pad, chord, arp, fx
 - **Clear Loop** clears captured loop data.
 - **Clear** removes active balls, loop data, trails, and hit effects.
 - **Tempo -/+** adjusts the transport tempo.
+- **Theme** switches between built-in visual themes and persists the choice locally.
 
 ## Local Development
 
@@ -143,6 +156,10 @@ src/
   patterns/importPattern.ts Paste-in JSON parser, validator, and mapper
   patterns/loopRecorder.ts  4-bar capture and frozen loop playback
   patterns/mutations.ts     Constrained musical pattern mutations
+  theme/applyTheme.ts       Applies CSS custom properties for the active skin
+  theme/themeStore.ts       Local-storage persistence for selected theme
+  theme/themeTypes.ts       Typed DOM and Canvas theme contracts
+  theme/themes.ts           Built-in Neon Lab and 808 Heritage theme configs
   types.ts                  Shared app, pattern, import, and transport types
 ```
 
@@ -157,9 +174,13 @@ src/
 7. Try **Ball**, **Launch 3**, **Rain**, **Stop**, and **Clear**.
 8. Capture a loop, stop the balls, and confirm the frozen loop keeps playing.
 9. Try **Gravity**, **Slow-Mo**, and **Orbit** and watch their countdowns reset.
-10. Use **Mutate** and confirm pad labels/colors change with a toast, then **Reset** and confirm the previous pad layout returns.
+10. Use **Mutate** and confirm pad labels or accents update with a toast, then **Reset** and confirm the previous pad layout returns.
 11. In ChatGPT MIDI Lab, use the example JSON, load it, apply it, and verify Performance Mode still works after import.
-12. Check the browser console for runtime errors.
+12. Switch between **Neon Lab** and **808 Heritage** in Lab Mode and Performance Mode.
+13. Refresh the page and confirm the selected skin persists.
+14. Confirm the playfield canvas changes with the theme, including pads, grid, beat LEDs, balls, trails, and ripples.
+15. Check a narrow mobile viewport and confirm button labels remain readable.
+16. Check the browser console for runtime errors.
 
 ## Roadmap
 

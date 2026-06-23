@@ -25,12 +25,12 @@ export class MidiLabPanel {
       <details class="lab-panel">
         <summary>
           <span>ChatGPT MIDI Lab</span>
-          <small>Paste MIDI JSON into BounceBox</small>
+          <small>Import a playable pattern</small>
         </summary>
 
         <div class="lab-body">
           <p class="lab-hint">
-            Ask ChatGPT for a BounceBox MIDI JSON pattern, paste it here, then turn it into a physics instrument.
+            Paste ChatGPT MIDI JSON and turn it into a playable physics instrument.
           </p>
 
           <textarea
@@ -41,12 +41,12 @@ export class MidiLabPanel {
           ></textarea>
 
           <div class="lab-actions">
-            <button type="button" data-midi-action="example">Use Example</button>
-            <button type="button" data-midi-action="load">Load JSON</button>
-            <button type="button" data-midi-action="apply" disabled>Apply to Playfield</button>
+            <button type="button" data-midi-action="example" aria-label="Use example MIDI JSON">Example</button>
+            <button type="button" data-midi-action="load" aria-label="Load MIDI JSON">Load</button>
+            <button type="button" data-midi-action="apply" aria-label="Apply MIDI JSON to playfield" disabled>Apply</button>
           </div>
 
-          <div class="lab-feedback is-idle" data-midi-feedback>Paste JSON or start with the example.</div>
+          <div class="lab-feedback is-idle" data-midi-feedback>Paste JSON or start from the example.</div>
           <div class="lab-summary" data-midi-summary hidden></div>
 
           <div class="mini-prompt">
@@ -55,7 +55,7 @@ export class MidiLabPanel {
             <button type="button" data-midi-action="copy-prompt">Copy Prompt</button>
           </div>
 
-          <p class="lab-footer">Paste ChatGPT MIDI JSON -> turn it into a playable physics instrument.</p>
+          <p class="lab-footer">JSON in. Tactile pattern out.</p>
         </div>
       </details>
     `;

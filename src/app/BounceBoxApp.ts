@@ -8,6 +8,10 @@ import { demoPatterns } from '../patterns/demoPatterns';
 import { LoopRecorder } from '../patterns/loopRecorder';
 import { clonePattern, mutatePattern } from '../patterns/mutations';
 import { PhysicsWorld } from '../physics/physicsWorld';
+import { applyTheme } from '../theme/applyTheme';
+import { getTheme, themes } from '../theme/themes';
+import { loadStoredThemeId, storeThemeId } from '../theme/themeStore';
+import type { BounceBoxTheme, CanvasRoleTokens } from '../theme/themeTypes';
 import type { AppStatus, DemoPattern, GrooveEvent, PadPattern, PhysicsSnapshot, TransportState } from '../types';
 
 export class BounceBoxApp {
@@ -25,8 +29,10 @@ export class BounceBoxApp {
   private captureButton!: HTMLButtonElement;
   private performanceButton!: HTMLButtonElement;
   private exitPerformanceButton!: HTMLButtonElement;
+  private themeSelect!: HTMLSelectElement;
   private patternNode!: HTMLElement;
   private tempoValueNode!: HTMLElement;
+  private barBeatNode!: HTMLElement;
   private beatNode!: HTMLElement;
   private effectReadoutNode!: HTMLElement;
   private toastNode!: HTMLElement;
@@ -46,6 +52,7 @@ export class BounceBoxApp {
   private mutatedPadPulseUntil = new Map<string, number>();
   private latestSnapshot: PhysicsSnapshot = { balls: [], pads: [] };
   private draggingPadId: string | null = null;
+  private activeTheme: BounceBoxTheme = getTheme(loadStoredThemeId());
   private hasActiveMutation = false;
   private effectWasActive = false;
   private shakeUntil = 0;
@@ -66,18 +73,34 @@ export class BounceBoxApp {
   }
 
   mount(): void {
+    applyTheme(this.activeTheme);
+
     this.root.innerHTML = `
       <main class="shell" aria-label="BounceBox physics groovebox">
         <section class="hero">
           <div>
-            <p class="eyebrow">Mobile Physics Instrument</p>
+            <p class="eyebrow">Hardware-Inspired Physics Instrument</p>
             <h1>BounceBox</h1>
-            <p class="subtitle">Physics Groovebox</p>
+            <p class="subtitle">Tactile sequencer for bouncing MIDI patterns</p>
           </div>
           <div class="hero-actions">
-            <button type="button" data-action="performance-mode">Performance Mode</button>
-            <button type="button" data-action="exit-performance" hidden>Exit Lab</button>
-            <div class="pulse-badge" aria-hidden="true">Bar 1.1</div>
+            <label class="theme-picker">
+              <span>Theme</span>
+              <select data-theme-select aria-label="Visual theme">
+                ${themes
+                  .map(
+                    (theme) =>
+                      `<option value="${theme.id}" ${theme.id === this.activeTheme.id ? 'selected' : ''}>${theme.name}</option>`
+                  )
+                  .join('')}
+              </select>
+            </label>
+            <button type="button" data-action="performance-mode" aria-label="Enter Performance Mode">Perform</button>
+            <button type="button" data-action="exit-performance" aria-label="Exit Performance Mode" hidden>Exit</button>
+            <div class="pulse-badge" aria-live="off">
+              <small>Bar</small>
+              <strong data-bar-beat>1.1</strong>
+            </div>
           </div>
         </section>
 
@@ -144,8 +167,10 @@ export class BounceBoxApp {
     const captureButton = this.root.querySelector<HTMLButtonElement>('[data-action="capture"]');
     const performanceButton = this.root.querySelector<HTMLButtonElement>('[data-action="performance-mode"]');
     const exitPerformanceButton = this.root.querySelector<HTMLButtonElement>('[data-action="exit-performance"]');
+    const themeSelect = this.root.querySelector<HTMLSelectElement>('[data-theme-select]');
     const patternNode = this.root.querySelector<HTMLElement>('[data-pattern-name]');
     const tempoValueNode = this.root.querySelector<HTMLElement>('[data-tempo-value]');
+    const barBeatNode = this.root.querySelector<HTMLElement>('[data-bar-beat]');
     const beatNode = this.root.querySelector<HTMLElement>('.beat-grid');
     const effectReadoutNode = this.root.querySelector<HTMLElement>('[data-effect-readout]');
     const toastNode = this.root.querySelector<HTMLElement>('[data-toast]');
@@ -160,8 +185,10 @@ export class BounceBoxApp {
       !captureButton ||
       !performanceButton ||
       !exitPerformanceButton ||
+      !themeSelect ||
       !patternNode ||
       !tempoValueNode ||
+      !barBeatNode ||
       !beatNode ||
       !effectReadoutNode ||
       !toastNode ||
@@ -171,6 +198,7 @@ export class BounceBoxApp {
     }
 
     this.shell = shell;
+    this.shell.dataset.theme = this.activeTheme.id;
     this.canvas = canvas;
     this.context = context;
     this.statusNode = statusNode;
@@ -178,8 +206,10 @@ export class BounceBoxApp {
     this.captureButton = captureButton;
     this.performanceButton = performanceButton;
     this.exitPerformanceButton = exitPerformanceButton;
+    this.themeSelect = themeSelect;
     this.patternNode = patternNode;
     this.tempoValueNode = tempoValueNode;
+    this.barBeatNode = barBeatNode;
     this.beatNode = beatNode;
     this.effectReadoutNode = effectReadoutNode;
     this.toastNode = toastNode;
@@ -199,6 +229,7 @@ export class BounceBoxApp {
     });
 
     this.bindControls();
+    this.bindThemeSelector();
     this.midiLab.mount();
     this.buildBeatGrid();
     this.resizeCanvas();
@@ -303,6 +334,21 @@ export class BounceBoxApp {
 
       this.syncStatus();
     });
+  }
+
+  private bindThemeSelector(): void {
+    this.themeSelect.addEventListener('change', () => {
+      this.setTheme(this.themeSelect.value);
+    });
+  }
+
+  private setTheme(themeId: string): void {
+    const nextTheme = getTheme(themeId);
+    this.activeTheme = nextTheme;
+    this.themeSelect.value = nextTheme.id;
+    this.shell.dataset.theme = nextTheme.id;
+    applyTheme(nextTheme);
+    storeThemeId(nextTheme.id);
   }
 
   private async startAudio(): Promise<void> {
@@ -422,7 +468,10 @@ export class BounceBoxApp {
     const quantized = this.transport.getQuantizedStep(now);
     const event = this.createGrooveEvent(pad, speed, quantized.step, now);
     const bigHit = getBigHitIntensity(pad.role, speed);
-    const visual = getRoleVisual(pad.role);
+    const visual = {
+      ...getRoleVisual(pad.role),
+      accentColor: this.getRoleCanvasTokens(pad.role, pad.color).accent
+    };
 
     this.loopRecorder.record(event, this.transport.stepsPerLoop);
     this.audio.triggerEvent(event, quantized.delayMs);
@@ -479,7 +528,7 @@ export class BounceBoxApp {
       id: `${pad.id}-${performance.now()}`,
       x: pad.x > 1 ? pad.x : pad.x * rect.width,
       y: pad.y > 1 ? pad.y : pad.y * rect.height,
-      color: recorded ? pad.color : '#ffffff',
+      color: recorded ? this.getRoleCanvasTokens(pad.role, pad.color).accent : this.activeTheme.canvas.ripples.fallback,
       startedAt: performance.now(),
       intensity: Math.min(2.2, Math.max(0.6, (speed / 7) * scale)),
       kind
@@ -512,6 +561,25 @@ export class BounceBoxApp {
     if (this.particles.length > 120) {
       this.particles = this.particles.slice(-120);
     }
+  }
+
+  private getRoleCanvasTokens(role: PadPattern['role'], fallbackColor?: string): CanvasRoleTokens {
+    const padTheme = this.activeTheme.canvas.pads;
+    const roleTokens = padTheme.roles[role] ?? padTheme.defaultRole;
+
+    if (!padTheme.usePatternColors || !fallbackColor) {
+      return roleTokens;
+    }
+
+    return {
+      ...roleTokens,
+      accent: fallbackColor,
+      fill: fallbackColor
+    };
+  }
+
+  private getPadCanvasTokens(pad: PadPattern): CanvasRoleTokens {
+    return this.getRoleCanvasTokens(pad.role, pad.color);
   }
 
   private movePad(padId: string, x: number, y: number): void {
@@ -620,7 +688,7 @@ export class BounceBoxApp {
           id: `${event.id}-loop-${now}`,
           x: this.canvas.clientWidth * 0.5,
           y: this.canvas.clientHeight * 0.14,
-          color: event.color,
+          color: this.getRoleCanvasTokens(event.role, event.color).accent,
           startedAt: now,
           intensity: event.velocity,
           kind: 'loop'
@@ -656,23 +724,24 @@ export class BounceBoxApp {
 
   private drawBackground(ctx: CanvasRenderingContext2D, width: number, height: number, transport: TransportState): void {
     const activeEffect = this.performance.active;
+    const theme = this.activeTheme.canvas.background;
     const now = performance.now();
-    const beatGlow = transport.beat === 1 ? 0.2 : 0.08;
-    const effectGlow = activeEffect ? 0.12 : 0;
+    const beatGlow = transport.beat === 1 ? theme.beatGlow : theme.beatGlow * 0.4;
+    const effectGlow = activeEffect ? theme.effectGlow : 0;
     const gradient = ctx.createRadialGradient(width * 0.5, height * 0.15, 20, width * 0.5, height * 0.55, height);
-    gradient.addColorStop(0, `rgba(34, 211, 238, ${0.22 + beatGlow + effectGlow})`);
-    gradient.addColorStop(0.52, '#0a1028');
-    gradient.addColorStop(1, '#040711');
+    gradient.addColorStop(0, colorWithAlpha(theme.glow, theme.glowAlpha + beatGlow + effectGlow));
+    gradient.addColorStop(0.52, theme.middle);
+    gradient.addColorStop(1, theme.base);
 
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
     ctx.save();
-    ctx.globalAlpha = 0.1 + Math.sin(now / 900) * 0.025;
-    ctx.strokeStyle = '#67e8f9';
+    ctx.globalAlpha = theme.gridAlpha + Math.sin(now / 900) * theme.gridPulse;
+    ctx.strokeStyle = theme.grid;
     ctx.lineWidth = 1;
 
-    const grid = Math.max(28, width / 10);
+    const grid = Math.max(theme.gridMinSize, width / 10);
     for (let x = grid; x < width; x += grid) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
@@ -689,16 +758,29 @@ export class BounceBoxApp {
 
     ctx.restore();
 
+    ctx.save();
+    ctx.globalAlpha = theme.gridAlpha * 1.55;
+    ctx.strokeStyle = theme.horizon;
+    for (let index = 1; index < 16; index += 1) {
+      const x = (width / 16) * index;
+      ctx.lineWidth = index % 4 === 0 ? 1.2 : 0.6;
+      ctx.beginPath();
+      ctx.moveTo(x, height * 0.08);
+      ctx.lineTo(x, height * 0.94);
+      ctx.stroke();
+    }
+    ctx.restore();
+
     const floor = ctx.createLinearGradient(0, height * 0.66, 0, height);
-    floor.addColorStop(0, 'rgba(34, 211, 238, 0)');
-    floor.addColorStop(0.55, 'rgba(34, 211, 238, 0.08)');
-    floor.addColorStop(1, 'rgba(244, 114, 182, 0.12)');
+    floor.addColorStop(0, theme.floor.start);
+    floor.addColorStop(0.55, theme.floor.mid);
+    floor.addColorStop(1, theme.floor.end);
     ctx.fillStyle = floor;
     ctx.fillRect(0, height * 0.66, width, height * 0.34);
 
     ctx.save();
-    ctx.globalAlpha = 0.55;
-    ctx.strokeStyle = `rgba(103, 232, 249, ${0.16 + beatGlow * 0.22})`;
+    ctx.globalAlpha = theme.horizonAlpha;
+    ctx.strokeStyle = colorWithAlpha(theme.horizon, 0.28 + beatGlow);
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(width * 0.12, height * 0.82);
@@ -708,49 +790,113 @@ export class BounceBoxApp {
 
     const vignette = ctx.createRadialGradient(width * 0.5, height * 0.48, height * 0.18, width * 0.5, height * 0.5, height * 0.78);
     vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    vignette.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+    vignette.addColorStop(1, theme.vignette);
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, width, height);
   }
 
   private drawPads(ctx: CanvasRenderingContext2D, snapshot: PhysicsSnapshot): void {
+    const padTheme = this.activeTheme.canvas.pads;
+
     for (const pad of snapshot.pads) {
       const isDragging = this.draggingPadId === pad.id;
       const isMutatedPulse = (this.mutatedPadPulseUntil.get(pad.id) ?? 0) > performance.now();
-      const glow = isDragging || isMutatedPulse ? 44 : pad.isActive ? 34 : pad.kind === 'portal' ? 18 : 12;
+      const isPressed = isDragging || isMutatedPulse;
+      const isRubber = padTheme.shape === 'rubber';
+      const tokens = this.getPadCanvasTokens(pad);
+      const glow =
+        (isPressed ? padTheme.pressedGlow : pad.isActive ? padTheme.activeGlow : pad.kind === 'portal' ? padTheme.activeGlow : padTheme.inactiveGlow) *
+        padTheme.glowScale;
       const roleVisual = getRoleVisual(pad.role);
-      const coreGradient = ctx.createRadialGradient(pad.x - pad.radius * 0.28, pad.y - pad.radius * 0.34, 2, pad.x, pad.y, pad.radius);
+      const auraAlpha = isPressed ? padTheme.pressedAura : pad.isActive ? padTheme.activeAura : pad.kind === 'portal' ? padTheme.portalAura : padTheme.inactiveAura;
+      const outerScale = isPressed ? 1.62 : pad.kind === 'portal' ? 1.45 : 1.28;
+      const padWidth = pad.radius * (isRubber ? 2.1 : 2);
+      const padHeight = pad.radius * (isRubber ? 1.55 : 2);
+      const padLeft = pad.x - padWidth / 2;
+      const padTop = pad.y - padHeight / 2;
+      const cornerRadius = Math.max(7, Math.min(14, pad.radius * 0.24));
 
       ctx.save();
       ctx.shadowBlur = glow;
-      ctx.shadowColor = pad.color;
-      ctx.fillStyle = pad.color;
-      ctx.globalAlpha = isDragging || isMutatedPulse ? 0.46 : pad.isActive ? 0.38 : 0.18;
+      ctx.shadowColor = tokens.accent;
+      ctx.fillStyle = tokens.accent;
+      ctx.globalAlpha = auraAlpha;
       ctx.beginPath();
-      ctx.arc(pad.x, pad.y, pad.radius * (isDragging || isMutatedPulse ? 1.62 : pad.kind === 'portal' ? 1.45 : 1.28), 0, Math.PI * 2);
+      if (isRubber) {
+        drawRoundedRectPath(
+          ctx,
+          pad.x - (padWidth * outerScale) / 2,
+          pad.y - (padHeight * outerScale) / 2,
+          padWidth * outerScale,
+          padHeight * outerScale,
+          cornerRadius * 1.4
+        );
+      } else {
+        ctx.arc(pad.x, pad.y, pad.radius * outerScale, 0, Math.PI * 2);
+      }
       ctx.fill();
 
       ctx.globalAlpha = 1;
-      coreGradient.addColorStop(0, '#ffffff');
-      coreGradient.addColorStop(0.22, roleVisual.accentColor);
-      coreGradient.addColorStop(0.58, pad.color);
-      coreGradient.addColorStop(1, 'rgba(2, 6, 23, 0.9)');
+
+      if (isRubber) {
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+        ctx.beginPath();
+        drawRoundedRectPath(ctx, padLeft, padTop + 3, padWidth, padHeight, cornerRadius);
+        ctx.fill();
+        ctx.strokeStyle = colorWithAlpha(tokens.accent, isPressed || pad.isActive ? 0.52 : 0.24);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        drawRoundedRectPath(ctx, padLeft - 1, padTop - 1, padWidth + 2, padHeight + 2, cornerRadius + 1);
+        ctx.stroke();
+      }
+
+      const coreGradient = isRubber
+        ? ctx.createLinearGradient(pad.x, padTop, pad.x, padTop + padHeight)
+        : ctx.createRadialGradient(pad.x - pad.radius * 0.28, pad.y - pad.radius * 0.34, 2, pad.x, pad.y, pad.radius);
+      coreGradient.addColorStop(0, isRubber ? tokens.inner : tokens.inner);
+      coreGradient.addColorStop(0.22, isRubber ? tokens.fill : roleVisual.accentColor);
+      coreGradient.addColorStop(0.62, tokens.fill);
+      coreGradient.addColorStop(1, padTheme.edge);
       ctx.fillStyle = coreGradient;
       ctx.beginPath();
-      ctx.arc(pad.x, pad.y, pad.radius * 0.9, 0, Math.PI * 2);
+      if (isRubber) {
+        drawRoundedRectPath(ctx, padLeft, padTop, padWidth, padHeight, cornerRadius);
+      } else {
+        ctx.arc(pad.x, pad.y, pad.radius * 0.9, 0, Math.PI * 2);
+      }
       ctx.fill();
 
-      ctx.lineWidth = isDragging || isMutatedPulse || pad.isActive ? 3 : 2;
-      ctx.strokeStyle = pad.color;
+      ctx.lineWidth = isPressed || pad.isActive ? 3 : 2;
+      ctx.strokeStyle = isRubber ? (isPressed || pad.isActive ? padTheme.strokeActive : padTheme.stroke) : tokens.accent;
       ctx.beginPath();
-      ctx.arc(pad.x, pad.y, pad.radius, 0, Math.PI * 2);
+      if (isRubber) {
+        drawRoundedRectPath(ctx, padLeft, padTop, padWidth, padHeight, cornerRadius);
+      } else {
+        ctx.arc(pad.x, pad.y, pad.radius, 0, Math.PI * 2);
+      }
       ctx.stroke();
 
+      if (isRubber) {
+        ctx.globalAlpha = isPressed || pad.isActive ? 0.86 : 0.56;
+        ctx.strokeStyle = tokens.accent;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(padLeft + cornerRadius, padTop + padHeight - 4);
+        ctx.lineTo(padLeft + padWidth - cornerRadius, padTop + padHeight - 4);
+        ctx.stroke();
+      }
+
       ctx.globalAlpha = 0.82;
-      ctx.strokeStyle = 'rgba(255,255,255,0.74)';
+      ctx.strokeStyle = padTheme.highlight;
       ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.arc(pad.x, pad.y, pad.radius * 0.68, Math.PI * 1.08, Math.PI * 1.72);
+      if (isRubber) {
+        ctx.moveTo(padLeft + pad.radius * 0.34, padTop + pad.radius * 0.32);
+        ctx.lineTo(padLeft + padWidth - pad.radius * 0.34, padTop + pad.radius * 0.32);
+      } else {
+        ctx.arc(pad.x, pad.y, pad.radius * 0.68, Math.PI * 1.08, Math.PI * 1.72);
+      }
       ctx.stroke();
       ctx.globalAlpha = 1;
 
@@ -758,7 +904,7 @@ export class BounceBoxApp {
         const orbit = performance.now() / 430;
         for (let index = 0; index < 3; index += 1) {
           const angle = orbit + index * ((Math.PI * 2) / 3);
-          ctx.fillStyle = roleVisual.accentColor;
+          ctx.fillStyle = tokens.accent;
           ctx.globalAlpha = 0.86;
           ctx.beginPath();
           ctx.arc(pad.x + Math.cos(angle) * pad.radius * 0.78, pad.y + Math.sin(angle) * pad.radius * 0.78, 2.1, 0, Math.PI * 2);
@@ -771,19 +917,19 @@ export class BounceBoxApp {
       }
 
       ctx.shadowBlur = 0;
-      ctx.font = `${isMutatedPulse ? '900' : '800'} ${pad.radius > 24 ? 12 : 11}px Inter, system-ui, sans-serif`;
+      ctx.font = `${isMutatedPulse ? '900' : '800'} ${pad.radius > 24 ? 12 : 11}px ${padTheme.labelFont}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.lineWidth = 4;
-      ctx.strokeStyle = 'rgba(2, 6, 23, 0.58)';
+      ctx.strokeStyle = padTheme.labelStroke;
       ctx.strokeText(pad.label, pad.x, pad.y - 5);
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = tokens.text ?? padTheme.label;
       ctx.fillText(pad.label, pad.x, pad.y - 5);
-      ctx.font = `700 ${pad.radius > 24 ? 11 : 10}px Inter, system-ui, sans-serif`;
+      ctx.font = `700 ${pad.radius > 24 ? 11 : 10}px ${padTheme.labelFont}`;
       ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(2, 6, 23, 0.56)';
+      ctx.strokeStyle = padTheme.labelStroke;
       ctx.strokeText(pad.kind === 'drum' ? pad.role.toUpperCase() : pad.note, pad.x, pad.y + 8);
-      ctx.fillStyle = '#cbd5e1';
+      ctx.fillStyle = padTheme.subLabel;
       ctx.fillText(pad.kind === 'drum' ? pad.role.toUpperCase() : pad.note, pad.x, pad.y + 8);
       ctx.restore();
     }
@@ -820,16 +966,33 @@ export class BounceBoxApp {
   }
 
   private drawTrails(ctx: CanvasRenderingContext2D): void {
+    const trailTheme = this.activeTheme.canvas.balls;
+
     for (const points of this.trails.values()) {
-      points.forEach((point, index) => {
-        const speedBoost = Math.min(0.2, point.speed / 70);
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const point = points[index];
+        const nextPoint = points[index + 1];
+        const speedBoost = Math.min(0.16, point.speed / 84);
         ctx.save();
-        ctx.globalAlpha = Math.max(0, 0.18 + speedBoost - index * 0.02);
-        ctx.fillStyle = '#22d3ee';
-        ctx.shadowBlur = 12 + Math.min(18, point.speed * 1.2);
-        ctx.shadowColor = '#22d3ee';
+        ctx.globalAlpha = Math.max(0, trailTheme.trailAlpha + speedBoost - index * 0.018);
+        ctx.strokeStyle = trailTheme.trail;
+        ctx.lineWidth = Math.max(1.4, point.radius * (0.62 - index * 0.022));
+        ctx.lineCap = 'round';
+        ctx.shadowBlur = (8 + Math.min(14, point.speed)) * trailTheme.glowScale;
+        ctx.shadowColor = trailTheme.trailShadow;
         ctx.beginPath();
-        ctx.arc(point.x, point.y, Math.max(2, point.radius * (0.95 - index * 0.04)), 0, Math.PI * 2);
+        ctx.moveTo(point.x, point.y);
+        ctx.lineTo(nextPoint.x, nextPoint.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      points.slice(0, 3).forEach((point, index) => {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, trailTheme.trailAlpha * 1.3 - index * 0.035);
+        ctx.fillStyle = trailTheme.trail;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, Math.max(1.5, point.radius * (0.55 - index * 0.09)), 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       });
@@ -838,6 +1001,7 @@ export class BounceBoxApp {
 
   private drawParticles(ctx: CanvasRenderingContext2D): void {
     const now = performance.now();
+    const particleTheme = this.activeTheme.canvas.particles;
     this.particles = this.particles.filter((particle) => now - particle.startedAt < particle.lifeMs);
 
     for (const particle of this.particles) {
@@ -847,9 +1011,9 @@ export class BounceBoxApp {
       const y = particle.y + particle.vy * progress * 46 + progress * progress * 12;
 
       ctx.save();
-      ctx.globalAlpha = ease * 0.78;
+      ctx.globalAlpha = ease * particleTheme.alpha;
       ctx.fillStyle = particle.color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = particleTheme.shadowBlur;
       ctx.shadowColor = particle.color;
       ctx.beginPath();
       ctx.arc(x, y, particle.size * ease, 0, Math.PI * 2);
@@ -860,6 +1024,7 @@ export class BounceBoxApp {
 
   private drawRipples(ctx: CanvasRenderingContext2D): void {
     const now = performance.now();
+    const rippleTheme = this.activeTheme.canvas.ripples;
     this.ripples = this.ripples.filter((ripple) => now - ripple.startedAt < 540);
 
     for (const ripple of this.ripples) {
@@ -867,21 +1032,28 @@ export class BounceBoxApp {
       const bigMultiplier = ripple.kind === 'big' ? 1.45 : ripple.kind === 'loop' ? 0.82 : 1;
 
       ctx.save();
-      ctx.globalAlpha = (1 - progress) * (ripple.kind === 'big' ? 0.82 : 0.62);
+      ctx.globalAlpha = (1 - progress) * (ripple.kind === 'big' ? rippleTheme.bigAlpha : rippleTheme.alpha);
       ctx.strokeStyle = ripple.color;
-      ctx.lineWidth = 2 + ripple.intensity * bigMultiplier;
-      ctx.shadowBlur = 18 + ripple.intensity * 10;
+      ctx.lineWidth = 1.2 + ripple.intensity * bigMultiplier;
+      ctx.shadowBlur = (12 + ripple.intensity * 7) * rippleTheme.shadowScale;
       ctx.shadowColor = ripple.color;
       ctx.beginPath();
       ctx.arc(ripple.x, ripple.y, 10 + progress * 70 * ripple.intensity * bigMultiplier, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha *= 0.46;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(ripple.x, ripple.y, 5 + progress * 38 * ripple.intensity * bigMultiplier, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
   }
 
   private drawBalls(ctx: CanvasRenderingContext2D, snapshot: PhysicsSnapshot): void {
+    const ballTheme = this.activeTheme.canvas.balls;
+
     for (const ball of snapshot.balls) {
-      const speedGlow = Math.min(26, 8 + ball.speed * 2.5);
+      const speedGlow = Math.min(26, 8 + ball.speed * 2.5) * ballTheme.glowScale;
       const gradient = ctx.createRadialGradient(
         ball.x - ball.radius * 0.35,
         ball.y - ball.radius * 0.45,
@@ -891,19 +1063,28 @@ export class BounceBoxApp {
         ball.radius
       );
 
-      gradient.addColorStop(0, '#ffffff');
-      gradient.addColorStop(0.42, '#67e8f9');
-      gradient.addColorStop(1, '#2563eb');
+      gradient.addColorStop(0, ballTheme.highlight);
+      gradient.addColorStop(0.42, ballTheme.mid);
+      gradient.addColorStop(1, ballTheme.edge);
 
       ctx.save();
       ctx.shadowBlur = speedGlow;
-      ctx.shadowColor = '#22d3ee';
+      ctx.shadowColor = ballTheme.shadow;
       ctx.fillStyle = gradient;
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
       ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 1.25;
+      ctx.strokeStyle = colorWithAlpha(ballTheme.highlight, 0.34);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = colorWithAlpha(ballTheme.edge, 0.66);
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.radius - 0.6, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.globalAlpha = 0.85;
-      ctx.fillStyle = 'rgba(255,255,255,0.82)';
+      ctx.fillStyle = colorWithAlpha(ballTheme.highlight, 0.82);
       ctx.beginPath();
       ctx.arc(ball.x - ball.radius * 0.28, ball.y - ball.radius * 0.34, Math.max(2, ball.radius * 0.24), 0, Math.PI * 2);
       ctx.fill();
@@ -953,11 +1134,7 @@ export class BounceBoxApp {
     const state = this.transport.getState();
     this.patternNode.textContent = this.currentPattern.name;
     this.tempoValueNode.textContent = String(this.transport.getTempo());
-
-    const badge = this.root.querySelector<HTMLElement>('.pulse-badge');
-    if (badge) {
-      badge.textContent = `Bar ${state.bar}.${state.beat}`;
-    }
+    this.barBeatNode.textContent = `${state.bar}.${state.beat}`;
   }
 
   private buildBeatGrid(): void {
@@ -970,10 +1147,7 @@ export class BounceBoxApp {
       node.classList.toggle('is-downbeat', index % 4 === 0);
     });
 
-    const badge = this.root.querySelector<HTMLElement>('.pulse-badge');
-    if (badge) {
-      badge.textContent = `Bar ${transport.bar}.${transport.beat}`;
-    }
+    this.barBeatNode.textContent = `${transport.bar}.${transport.beat}`;
   }
 
   private renderEffectStatus(): void {
@@ -988,7 +1162,12 @@ export class BounceBoxApp {
       button.classList.toggle('is-effect-active', isActive);
 
       if (isActive && activeEffect) {
-        button.textContent = `${activeEffect.label} ${remainingSeconds}s`;
+        button.textContent =
+          button.dataset.effect === 'gravity-flip'
+            ? `Flip ${remainingSeconds}s`
+            : button.dataset.effect === 'slow-mo'
+              ? `Slow ${remainingSeconds}s`
+              : `Orbit ${remainingSeconds}s`;
       } else {
         button.textContent = button.dataset.effect === 'gravity-flip' ? 'Gravity' : button.dataset.effect === 'slow-mo' ? 'Slow-Mo' : 'Orbit';
       }
@@ -998,4 +1177,46 @@ export class BounceBoxApp {
   destroy(): void {
     window.cancelAnimationFrame(this.animationFrame);
   }
+}
+
+function colorWithAlpha(color: string, alpha: number): string {
+  const safeAlpha = Math.max(0, Math.min(1, alpha));
+  const hex = color.trim();
+
+  if (/^#[0-9a-f]{6}$/i.test(hex)) {
+    const red = Number.parseInt(hex.slice(1, 3), 16);
+    const green = Number.parseInt(hex.slice(3, 5), 16);
+    const blue = Number.parseInt(hex.slice(5, 7), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${safeAlpha})`;
+  }
+
+  if (/^#[0-9a-f]{3}$/i.test(hex)) {
+    const red = Number.parseInt(hex[1] + hex[1], 16);
+    const green = Number.parseInt(hex[2] + hex[2], 16);
+    const blue = Number.parseInt(hex[3] + hex[3], 16);
+    return `rgba(${red}, ${green}, ${blue}, ${safeAlpha})`;
+  }
+
+  return color;
+}
+
+function drawRoundedRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
 }
