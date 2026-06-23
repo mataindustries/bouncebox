@@ -20,6 +20,7 @@ const maxRipples = 36;
 const busyMaxRipples = 24;
 const trailPoints = 10;
 const busyTrailPoints = 7;
+type GroovePlaybackSource = 'live' | 'loop' | 'loop-tail' | 'echo' | 'stutter';
 
 export class BounceBoxApp {
   private readonly root: HTMLElement;
@@ -69,6 +70,11 @@ export class BounceBoxApp {
   private lastRenderedBeatStep = -1;
   private lastRenderedBarBeat = '';
   private lastRenderedEffectKey = '';
+  private lastTriggeredEvent: GrooveEvent | null = null;
+  private recentHits: Array<{ event: GrooveEvent; hitAt: number }> = [];
+  private scheduledFxTimers: number[] = [];
+  private lastStutterAt = 0;
+  private stutterPulseUntil = 0;
   private status: AppStatus = {
     tempo: this.physics.tempo,
     key: this.physics.key,
@@ -157,9 +163,12 @@ export class BounceBoxApp {
           </div>
           <div class="control-group control-group-fx">
             <small>FX</small>
-            <button type="button" data-action="effect" data-effect="gravity-flip">Gravity</button>
-            <button type="button" data-action="effect" data-effect="slow-mo">Slow-Mo</button>
-            <button type="button" data-action="effect" data-effect="orbit-chaos">Orbit</button>
+            <button type="button" data-action="effect" data-effect="gravity-flip">GRAV</button>
+            <button type="button" data-action="effect" data-effect="turbo">TURBO</button>
+            <button type="button" data-action="effect" data-effect="orbit-chaos">ORBIT</button>
+            <button type="button" data-action="effect" data-effect="echo">ECHO</button>
+            <button type="button" data-action="effect" data-effect="stutter">STUTTER</button>
+            <button type="button" data-action="effect" data-effect="filter-sweep">FILTER</button>
           </div>
           <div class="control-group control-group-pattern">
             <small>Pattern</small>
@@ -345,6 +354,7 @@ export class BounceBoxApp {
         this.particles = [];
         this.performance.clear();
         this.physics.resetPerformanceEffect();
+        this.clearScheduledFxTimers();
         this.status.lastTriggeredNote = '-';
         this.updateCaptureButton();
         this.renderEffectStatus();
@@ -463,10 +473,24 @@ export class BounceBoxApp {
   }
 
   private startPerformanceEffect(effectId: PerformanceEffectId): void {
+    this.clearScheduledFxTimers();
     this.performance.start(effectId);
     this.physics.applyPerformanceEffect(effectId);
     this.effectWasActive = true;
-    this.shakeUntil = performance.now() + 180;
+    this.shakeUntil = performance.now() + (effectId === 'turbo' ? 220 : 140);
+
+    if (effectId === 'turbo') {
+      this.physics.pulseField(1.35);
+    }
+
+    if (effectId === 'echo') {
+      this.seedEchoFromRecentHits();
+    }
+
+    if (effectId === 'stutter') {
+      this.scheduleStutterBurst(this.lastTriggeredEvent, performance.now(), true);
+    }
+
     this.renderEffectStatus();
   }
 
@@ -492,7 +516,8 @@ export class BounceBoxApp {
     };
 
     this.loopRecorder.record(event, this.transport.stepsPerLoop);
-    this.audio.triggerEvent(event, quantized.delayMs);
+    this.rememberHit(event, now);
+    this.playGrooveEvent(event, quantized.delayMs, 'live');
     this.status.lastTriggeredNote = `${pad.label} ${event.note}`;
     this.addRipple(pad, speed, true, bigHit > 1.05 ? 'big' : 'hit', visual.ringScale);
     this.spawnParticles(pad, visual, bigHit);
@@ -697,6 +722,7 @@ export class BounceBoxApp {
 
     if (!active && this.effectWasActive) {
       this.physics.resetPerformanceEffect();
+      this.clearScheduledFxTimers();
       this.effectWasActive = false;
     }
 
@@ -705,10 +731,19 @@ export class BounceBoxApp {
 
   private playLoopSteps(now: number): void {
     for (const step of this.transport.consumeAdvancedSteps(now)) {
+      if (step % 8 === 0) {
+        this.physics.pulseField(this.performance.active?.id === 'turbo' ? 1.25 : 1);
+      }
+
       const events = this.loopRecorder.getEventsForStep(step);
 
+      if (!events.length) {
+        this.playGhostTick(step);
+      }
+
       for (const event of events) {
-        this.audio.triggerEvent(event);
+        this.rememberHit(event, now);
+        this.playGrooveEvent(event, 0, 'loop');
         this.ripples.push({
           id: `${event.id}-loop-${now}`,
           x: this.canvas.clientWidth * 0.5,
@@ -719,9 +754,165 @@ export class BounceBoxApp {
           kind: 'loop'
         });
         this.capRipples();
+        this.scheduleSparseLoopTail(event);
         this.status.lastTriggeredNote = `Loop ${event.note}`;
       }
     }
+  }
+
+  private playGrooveEvent(event: GrooveEvent, delayMs: number, source: GroovePlaybackSource, velocityScale = 1): void {
+    this.audio.triggerEvent(event, delayMs, {
+      velocityScale,
+      filterBrightness: this.getPlaybackBrightness(performance.now() + delayMs)
+    });
+
+    if ((source === 'live' || source === 'loop') && this.performance.active?.id === 'echo') {
+      this.scheduleEchoRepeats(event, delayMs);
+    }
+
+    if ((source === 'live' || source === 'loop') && this.performance.active?.id === 'stutter') {
+      this.scheduleStutterBurst(event, performance.now() + delayMs, false);
+    }
+  }
+
+  private scheduleEchoRepeats(event: GrooveEvent, baseDelayMs: number): void {
+    const stepMs = this.transport.getStepMs();
+    const repeats = [
+      { steps: 2, velocityScale: 0.42 },
+      { steps: 4, velocityScale: 0.25 },
+      { steps: 6, velocityScale: 0.16 }
+    ];
+
+    for (const repeat of repeats) {
+      const delayMs = baseDelayMs + stepMs * repeat.steps;
+      this.audio.triggerEvent(event, delayMs, {
+        velocityScale: repeat.velocityScale,
+        filterBrightness: this.getPlaybackBrightness(performance.now() + delayMs)
+      });
+      this.scheduleFxTimer(() => this.addEventRipple(event, repeat.velocityScale, 'loop'), delayMs);
+    }
+  }
+
+  private seedEchoFromRecentHits(): void {
+    const now = performance.now();
+    const stepMs = this.transport.getStepMs();
+    const hits = this.recentHits.filter((hit) => now - hit.hitAt < 4500).slice(-3);
+
+    if (!hits.length) {
+      this.showToast('Echo ready: hit pads to repeat.');
+      return;
+    }
+
+    hits.forEach((hit, index) => this.scheduleEchoRepeats(hit.event, index * stepMs));
+  }
+
+  private scheduleSparseLoopTail(event: GrooveEvent): void {
+    if (!this.loopRecorder.isFrozen || this.loopRecorder.eventCount > 8 || this.performance.active?.id === 'echo') {
+      return;
+    }
+
+    const delayMs = this.transport.getStepMs() * 2;
+    this.playGrooveEvent(event, delayMs, 'loop-tail', 0.24);
+    this.scheduleFxTimer(() => this.addEventRipple(event, 0.24, 'loop'), delayMs);
+  }
+
+  private scheduleStutterBurst(event: GrooveEvent | null, atMs: number, force: boolean): void {
+    if (!event) {
+      if (force) {
+        this.showToast('Stutter ready: hit a pad first.');
+      }
+      return;
+    }
+
+    const now = performance.now();
+
+    if (!force && now - this.lastStutterAt < 560) {
+      return;
+    }
+
+    const stepMs = this.transport.getStepMs();
+    const quantized = this.transport.getQuantizedStep(atMs);
+    const baseDelayMs = Math.max(0, atMs - now);
+    const startDelayMs = baseDelayMs + Math.max(0, force ? quantized.delayMs : quantized.delayMs + stepMs);
+    const repeats = [0.62, 0.5, 0.4, 0.32];
+    this.lastStutterAt = now;
+    this.stutterPulseUntil = now + startDelayMs + stepMs * repeats.length;
+
+    repeats.forEach((velocityScale, index) => {
+      const delayMs = startDelayMs + stepMs * index;
+      this.audio.triggerEvent(event, delayMs, {
+        velocityScale,
+        filterBrightness: this.getPlaybackBrightness(performance.now() + delayMs)
+      });
+      this.scheduleFxTimer(() => {
+        this.stutterPulseUntil = performance.now() + 120;
+        this.addEventRipple(event, velocityScale, index % 2 === 0 ? 'big' : 'loop');
+      }, delayMs);
+    });
+  }
+
+  private playGhostTick(step: number): void {
+    const activeEffect = this.performance.active?.id;
+
+    if (!this.loopRecorder.isFrozen && activeEffect !== 'echo' && activeEffect !== 'stutter') {
+      return;
+    }
+
+    if (step % 4 !== 2) {
+      return;
+    }
+
+    const velocity = activeEffect === 'stutter' ? 0.2 : activeEffect === 'echo' ? 0.16 : 0.1;
+    this.audio.triggerGhostTick(0, velocity, this.getPlaybackBrightness());
+  }
+
+  private rememberHit(event: GrooveEvent, hitAt: number): void {
+    this.lastTriggeredEvent = event;
+    this.recentHits.push({ event, hitAt });
+    this.recentHits = this.recentHits.filter((hit) => hitAt - hit.hitAt < 7000).slice(-10);
+  }
+
+  private addEventRipple(event: GrooveEvent, velocityScale: number, kind: Ripple['kind']): void {
+    const pad = this.latestSnapshot.pads.find((item) => item.id === event.padId) ?? this.currentPattern.pads.find((item) => item.id === event.padId);
+
+    if (!pad) {
+      return;
+    }
+
+    const rect = this.canvas.getBoundingClientRect();
+    this.ripples.push({
+      id: `${event.id}-${kind}-${performance.now()}`,
+      x: pad.x > 1 ? pad.x : pad.x * rect.width,
+      y: pad.y > 1 ? pad.y : pad.y * rect.height,
+      color: this.getRoleCanvasTokens(event.role, event.color).accent,
+      startedAt: performance.now(),
+      intensity: Math.min(1.8, Math.max(0.25, event.velocity * velocityScale * 1.5)),
+      kind
+    });
+    this.capRipples();
+  }
+
+  private getPlaybackBrightness(now = performance.now()): number {
+    const activeEffect = this.performance.active;
+
+    if (!activeEffect) {
+      return 1;
+    }
+
+    if (activeEffect.id === 'filter-sweep') {
+      const progress = 1 - Math.max(0, (activeEffect.endsAt - now) / activeEffect.durationMs);
+      return 0.72 + Math.sin(progress * Math.PI) * 0.88 + progress * 0.12;
+    }
+
+    if (activeEffect.id === 'turbo') {
+      return 1.14;
+    }
+
+    if (activeEffect.id === 'echo') {
+      return 1.05;
+    }
+
+    return 1;
   }
 
   private draw(snapshot: PhysicsSnapshot, transport: TransportState): void {
@@ -738,6 +929,7 @@ export class BounceBoxApp {
     }
 
     this.drawBackground(ctx, width, height, transport);
+    this.drawPerformanceOverlay(ctx, width, height, transport);
     this.updateTrails(snapshot, width, height);
     this.drawTrails(ctx);
     this.drawPads(ctx, snapshot);
@@ -746,6 +938,58 @@ export class BounceBoxApp {
     this.drawBalls(ctx, snapshot);
     ctx.restore();
     this.renderBeatGrid(transport);
+  }
+
+  private drawPerformanceOverlay(ctx: CanvasRenderingContext2D, width: number, height: number, transport: TransportState): void {
+    const activeEffect = this.performance.active;
+
+    if (!activeEffect) {
+      return;
+    }
+
+    const theme = this.activeTheme.canvas.background;
+    const now = performance.now();
+    const progress = 1 - Math.max(0, (activeEffect.endsAt - now) / activeEffect.durationMs);
+
+    ctx.save();
+
+    if (activeEffect.id === 'turbo') {
+      const pulse = 0.05 + Math.sin(now / 120) * 0.018;
+      const gradient = ctx.createRadialGradient(width * 0.5, height * 0.5, 20, width * 0.5, height * 0.5, height * 0.72);
+      gradient.addColorStop(0, colorWithAlpha(theme.glow, 0.08 + pulse));
+      gradient.addColorStop(1, colorWithAlpha(theme.horizon, 0));
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    if (activeEffect.id === 'echo') {
+      ctx.globalAlpha = 0.08 * (1 - Math.min(0.7, progress * 0.7));
+      ctx.strokeStyle = theme.horizon;
+      ctx.lineWidth = 1.5;
+      for (let index = 0; index < 3; index += 1) {
+        ctx.beginPath();
+        ctx.arc(width * 0.5, height * 0.5, 42 + ((now / 18 + index * 44) % 132), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    if (activeEffect.id === 'stutter') {
+      const blink = now < this.stutterPulseUntil ? 0.13 : transport.step % 2 === 0 ? 0.055 : 0.025;
+      ctx.fillStyle = colorWithAlpha(theme.horizon, blink);
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    if (activeEffect.id === 'filter-sweep') {
+      const alpha = 0.045 + Math.sin(progress * Math.PI) * 0.07;
+      const sweep = ctx.createLinearGradient(0, height * 0.1, width, height * 0.9);
+      sweep.addColorStop(0, colorWithAlpha(theme.glow, 0));
+      sweep.addColorStop(0.5, colorWithAlpha(theme.horizon, alpha));
+      sweep.addColorStop(1, colorWithAlpha(theme.glow, 0));
+      ctx.fillStyle = sweep;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    ctx.restore();
   }
 
   private drawBackground(ctx: CanvasRenderingContext2D, width: number, height: number, transport: TransportState): void {
@@ -1240,17 +1484,24 @@ export class BounceBoxApp {
       const isActive = Boolean(activeEffect && button.dataset.effect === activeEffect.id);
       button.classList.toggle('is-effect-active', isActive);
 
-      if (isActive && activeEffect) {
-        button.textContent =
-          button.dataset.effect === 'gravity-flip'
-            ? `Flip ${remainingSeconds}s`
-            : button.dataset.effect === 'slow-mo'
-              ? `Slow ${remainingSeconds}s`
-              : `Orbit ${remainingSeconds}s`;
-      } else {
-        button.textContent = button.dataset.effect === 'gravity-flip' ? 'Gravity' : button.dataset.effect === 'slow-mo' ? 'Slow-Mo' : 'Orbit';
-      }
+      button.textContent =
+        isActive && activeEffect
+          ? `${this.getEffectButtonLabel(button.dataset.effect)} ${remainingSeconds}s`
+          : this.getEffectButtonLabel(button.dataset.effect);
     });
+  }
+
+  private getEffectButtonLabel(effectId: string | undefined): string {
+    const labels: Record<string, string> = {
+      'gravity-flip': 'GRAV',
+      turbo: 'TURBO',
+      'orbit-chaos': 'ORBIT',
+      echo: 'ECHO',
+      stutter: 'STUTTER',
+      'filter-sweep': 'FILTER'
+    };
+
+    return labels[effectId ?? ''] ?? 'FX';
   }
 
   private notifyBallCap(addedBalls: number, requestedBalls: number): void {
@@ -1267,8 +1518,26 @@ export class BounceBoxApp {
     }
   }
 
+  private scheduleFxTimer(callback: () => void, delayMs: number): void {
+    const timer = window.setTimeout(() => {
+      this.scheduledFxTimers = this.scheduledFxTimers.filter((id) => id !== timer);
+      callback();
+    }, delayMs);
+
+    this.scheduledFxTimers.push(timer);
+  }
+
+  private clearScheduledFxTimers(): void {
+    for (const timer of this.scheduledFxTimers) {
+      window.clearTimeout(timer);
+    }
+
+    this.scheduledFxTimers = [];
+  }
+
   destroy(): void {
     window.cancelAnimationFrame(this.animationFrame);
+    this.clearScheduledFxTimers();
   }
 }
 

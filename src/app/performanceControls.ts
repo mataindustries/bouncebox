@@ -1,4 +1,4 @@
-export type PerformanceEffectId = 'gravity-flip' | 'slow-mo' | 'orbit-chaos';
+export type PerformanceEffectId = 'gravity-flip' | 'turbo' | 'orbit-chaos' | 'echo' | 'stutter' | 'filter-sweep';
 
 export interface ActivePerformanceEffect {
   id: PerformanceEffectId;
@@ -9,14 +9,20 @@ export interface ActivePerformanceEffect {
 
 const effectLabels: Record<PerformanceEffectId, string> = {
   'gravity-flip': 'Gravity Flip',
-  'slow-mo': 'Slow-Mo',
-  'orbit-chaos': 'Orbit Chaos'
+  turbo: 'Turbo',
+  'orbit-chaos': 'Orbit Chaos',
+  echo: 'Echo',
+  stutter: 'Stutter',
+  'filter-sweep': 'Filter Sweep'
 };
 
 const effectDurations: Record<PerformanceEffectId, number> = {
   'gravity-flip': 3600,
-  'slow-mo': 3200,
-  'orbit-chaos': 4200
+  turbo: 5200,
+  'orbit-chaos': 4200,
+  echo: 6400,
+  stutter: 2600,
+  'filter-sweep': 5600
 };
 
 export class PerformanceControls {

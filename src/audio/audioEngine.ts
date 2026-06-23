@@ -27,6 +27,12 @@ interface TriggerOptions {
   notes?: NoteName[];
   velocity?: number;
   delayMs?: number;
+  filterBrightness?: number;
+}
+
+interface TriggerEventOptions {
+  velocityScale?: number;
+  filterBrightness?: number;
 }
 
 export class AudioEngine {
@@ -62,15 +68,24 @@ export class AudioEngine {
     this.playUnlockTick();
   }
 
-  triggerEvent(event: GrooveEvent, delayMs = 0): void {
+  triggerEvent(event: GrooveEvent, delayMs = 0, options: TriggerEventOptions = {}): void {
     this.triggerInstrument({
       role: event.role,
       kind: event.kind,
       note: event.note,
       notes: event.notes,
-      velocity: event.velocity,
-      delayMs
+      velocity: event.velocity * (options.velocityScale ?? 1),
+      delayMs,
+      filterBrightness: options.filterBrightness
     });
+  }
+
+  triggerGhostTick(delayMs = 0, velocity = 0.1, filterBrightness = 1): void {
+    if (!this.context || !this.masterGain || !this.isReady) {
+      return;
+    }
+
+    this.playGhostHat(this.context.currentTime + delayMs / 1000, velocity, filterBrightness);
   }
 
   triggerInstrument(options: TriggerOptions): void {
@@ -79,42 +94,43 @@ export class AudioEngine {
     }
 
     const when = this.context.currentTime + (options.delayMs ?? 0) / 1000;
-    const velocity = Math.min(1, Math.max(0.15, options.velocity ?? 0.7));
+    const velocity = Math.min(0.95, Math.max(0.08, options.velocity ?? 0.7));
+    const filterBrightness = clampBrightness(options.filterBrightness ?? 1);
 
     if (options.role === 'kick') {
-      this.playKick(when, velocity);
+      this.playKick(when, velocity, filterBrightness);
       return;
     }
 
     if (options.role === 'snare') {
-      this.playSnare(when, velocity);
+      this.playSnare(when, velocity, filterBrightness);
       return;
     }
 
     if (options.role === 'hihat' || options.role === 'hat') {
-      this.playHat(when, velocity);
+      this.playHat(when, velocity, filterBrightness);
       return;
     }
 
     if (options.role === 'bass') {
-      this.playBass(options.note, when, velocity);
+      this.playBass(options.note, when, velocity, filterBrightness);
       return;
     }
 
     if (options.role === 'pad' || options.role === 'chord' || options.kind === 'chord') {
-      this.playChord(options.notes ?? [options.note], when, velocity);
+      this.playChord(options.notes ?? [options.note], when, velocity, filterBrightness);
       return;
     }
 
     if (options.role === 'portal' || options.role === 'arp' || options.role === 'fx') {
-      this.playArp(options.notes ?? [options.note], when, velocity);
+      this.playArp(options.notes ?? [options.note], when, velocity, filterBrightness);
       return;
     }
 
-    this.playPluck(options.note, when, velocity);
+    this.playPluck(options.note, when, velocity, filterBrightness);
   }
 
-  private playKick(when: number, velocity: number): void {
+  private playKick(when: number, velocity: number, filterBrightness: number): void {
     if (!this.context || !this.masterGain) {
       return;
     }
@@ -123,8 +139,8 @@ export class AudioEngine {
     const amp = this.context.createGain();
 
     oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(96, when);
-    oscillator.frequency.exponentialRampToValueAtTime(42, when + 0.16);
+    oscillator.frequency.setValueAtTime(94 + filterBrightness * 8, when);
+    oscillator.frequency.exponentialRampToValueAtTime(42 + filterBrightness * 2, when + 0.16);
     amp.gain.setValueAtTime(0.0001, when);
     amp.gain.exponentialRampToValueAtTime(0.45 * velocity, when + 0.01);
     amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.28);
@@ -135,7 +151,7 @@ export class AudioEngine {
     oscillator.stop(when + 0.32);
   }
 
-  private playSnare(when: number, velocity: number): void {
+  private playSnare(when: number, velocity: number, filterBrightness: number): void {
     if (!this.context || !this.masterGain) {
       return;
     }
@@ -149,7 +165,7 @@ export class AudioEngine {
 
     source.buffer = noise;
     filter.type = 'bandpass';
-    filter.frequency.value = 1600;
+    filter.frequency.value = 1600 * filterBrightness;
     filter.Q.value = 0.9;
     amp.gain.setValueAtTime(0.0001, when);
     amp.gain.exponentialRampToValueAtTime(0.22 * velocity, when + 0.008);
@@ -171,7 +187,7 @@ export class AudioEngine {
     tone.stop(when + 0.14);
   }
 
-  private playHat(when: number, velocity: number): void {
+  private playHat(when: number, velocity: number, filterBrightness: number): void {
     if (!this.context || !this.masterGain) {
       return;
     }
@@ -182,7 +198,7 @@ export class AudioEngine {
 
     source.buffer = this.createNoiseBuffer(0.08);
     filter.type = 'highpass';
-    filter.frequency.value = 5200;
+    filter.frequency.value = 5200 * filterBrightness;
     amp.gain.setValueAtTime(0.0001, when);
     amp.gain.exponentialRampToValueAtTime(0.12 * velocity, when + 0.004);
     amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.055);
@@ -193,29 +209,51 @@ export class AudioEngine {
     source.start(when);
   }
 
-  private playBass(note: NoteName, when: number, velocity: number): void {
+  private playGhostHat(when: number, velocity: number, filterBrightness: number): void {
+    if (!this.context || !this.masterGain) {
+      return;
+    }
+
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const amp = this.context.createGain();
+
+    source.buffer = this.createNoiseBuffer(0.045);
+    filter.type = 'highpass';
+    filter.frequency.value = 6500 * clampBrightness(filterBrightness);
+    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.exponentialRampToValueAtTime(0.045 * velocity, when + 0.003);
+    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.04);
+
+    source.connect(filter);
+    filter.connect(amp);
+    amp.connect(this.masterGain);
+    source.start(when);
+  }
+
+  private playBass(note: NoteName, when: number, velocity: number, filterBrightness: number): void {
     this.playTonal(note, when, velocity, {
       type: 'sawtooth',
       attack: 0.012,
-      decay: 0.34,
-      gain: 0.16,
-      filterStart: 620,
-      filterEnd: 180
-    });
+      decay: 0.38,
+      gain: 0.19,
+      filterStart: 820,
+      filterEnd: 230
+    }, filterBrightness);
   }
 
-  private playPluck(note: NoteName, when: number, velocity: number): void {
+  private playPluck(note: NoteName, when: number, velocity: number, filterBrightness: number): void {
     this.playTonal(note, when, velocity, {
       type: 'triangle',
       attack: 0.008,
       decay: 0.38,
-      gain: 0.13,
-      filterStart: 2400,
-      filterEnd: 900
-    });
+      gain: 0.145,
+      filterStart: 2900,
+      filterEnd: 1050
+    }, filterBrightness);
   }
 
-  private playChord(notes: NoteName[], when: number, velocity: number): void {
+  private playChord(notes: NoteName[], when: number, velocity: number, filterBrightness: number): void {
     notes.slice(0, 4).forEach((note, index) => {
       this.playTonal(note, when + index * 0.012, velocity * 0.65, {
         type: 'sine',
@@ -224,11 +262,11 @@ export class AudioEngine {
         gain: 0.075,
         filterStart: 1400,
         filterEnd: 760
-      });
+      }, filterBrightness);
     });
   }
 
-  private playArp(notes: NoteName[], when: number, velocity: number): void {
+  private playArp(notes: NoteName[], when: number, velocity: number, filterBrightness: number): void {
     notes.slice(0, 5).forEach((note, index) => {
       this.playTonal(note, when + index * 0.055, velocity * 0.75, {
         type: 'triangle',
@@ -237,7 +275,7 @@ export class AudioEngine {
         gain: 0.105,
         filterStart: 3100,
         filterEnd: 1500
-      });
+      }, filterBrightness);
     });
   }
 
@@ -252,7 +290,8 @@ export class AudioEngine {
       gain: number;
       filterStart: number;
       filterEnd: number;
-    }
+    },
+    filterBrightness: number
   ): void {
     if (!this.context || !this.masterGain) {
       return;
@@ -266,8 +305,8 @@ export class AudioEngine {
     oscillator.type = voice.type;
     oscillator.frequency.setValueAtTime(frequency, when);
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(voice.filterStart, when);
-    filter.frequency.exponentialRampToValueAtTime(voice.filterEnd, when + voice.decay);
+    filter.frequency.setValueAtTime(voice.filterStart * filterBrightness, when);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(90, voice.filterEnd * Math.sqrt(filterBrightness)), when + voice.decay);
     filter.Q.value = 1.1;
 
     amp.gain.setValueAtTime(0.0001, when);
@@ -316,6 +355,10 @@ export class AudioEngine {
     }
 
     const now = this.context.currentTime;
-    this.playPluck('C4', now, 0.45);
+    this.playPluck('C4', now, 0.45, 1);
   }
+}
+
+function clampBrightness(value: number): number {
+  return Math.min(1.85, Math.max(0.62, value));
 }

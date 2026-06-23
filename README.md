@@ -23,7 +23,7 @@ Performance features:
 
 - Drag pads with touch or mouse; pads stay inside the playfield and continue triggering collisions.
 - **Marble Rain** drops a controlled stream of balls from the top.
-- **Gravity Flip**, **Slow-Mo**, and **Orbit Chaos** are timed musical physics effects with visible countdowns.
+- **Gravity Flip**, **Turbo**, **Orbit Chaos**, **Echo**, **Stutter**, and **Filter Sweep** are timed musical performance effects with visible countdowns.
 - **Mutate Pattern** safely changes the active pattern by rotating notes, shifting octaves, changing a melodic role, varying accents, and pulsing changed pads.
 - **Reset Pattern** restores the exact pattern and pad layout from before mutation.
 - Controls are grouped into Launch, Groove, FX, and Pattern sections for one-handed mobile play.
@@ -105,8 +105,9 @@ kick, snare, hat, bass, lead, pluck, pad, chord, arp, fx
 - **Capture** freezes the last 4 bars of collision hits and replays them on the grid.
 - **Stop** removes active balls while a frozen groove keeps playing.
 - **Gravity** flips gravity for a few seconds.
-- **Slow-Mo** slows physics while preserving loop playback.
+- **Turbo** briefly energizes ball motion and wall bounces.
 - **Orbit** adds a centered swirl force for a few seconds.
+- **Echo**, **Stutter**, and **Filter** fill space between physical hits with tempo-aware musical repeats and tone movement.
 - **Mutate** applies a constrained musical mutation.
 - **Reset** restores the pattern before mutation.
 - **Clear Loop** clears captured loop data.
@@ -173,7 +174,7 @@ src/
 6. Drag pads around the playfield and confirm moved pads still trigger.
 7. Try **Ball**, **Launch 3**, **Rain**, **Stop**, and **Clear**.
 8. Capture a loop, stop the balls, and confirm the frozen loop keeps playing.
-9. Try **Gravity**, **Slow-Mo**, and **Orbit** and watch their countdowns reset.
+9. Try **Gravity**, **Turbo**, **Orbit**, **Echo**, **Stutter**, and **Filter** and watch their countdowns reset.
 10. Use **Mutate** and confirm pad labels or accents update with a toast, then **Reset** and confirm the previous pad layout returns.
 11. In ChatGPT MIDI Lab, use the example JSON, load it, apply it, and verify Performance Mode still works after import.
 12. Switch between **Neon Lab** and **808 Heritage** in Lab Mode and Performance Mode.
