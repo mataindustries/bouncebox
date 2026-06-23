@@ -14,6 +14,13 @@ import { loadStoredThemeId, storeThemeId } from '../theme/themeStore';
 import type { BounceBoxTheme, CanvasRoleTokens } from '../theme/themeTypes';
 import type { AppStatus, DemoPattern, GrooveEvent, PadPattern, PhysicsSnapshot, TransportState } from '../types';
 
+const maxParticles = 72;
+const busyMaxParticles = 42;
+const maxRipples = 36;
+const busyMaxRipples = 24;
+const trailPoints = 10;
+const busyTrailPoints = 7;
+
 export class BounceBoxApp {
   private readonly root: HTMLElement;
   private readonly audio = new AudioEngine();
@@ -36,6 +43,8 @@ export class BounceBoxApp {
   private beatNode!: HTMLElement;
   private effectReadoutNode!: HTMLElement;
   private toastNode!: HTMLElement;
+  private effectButtons: HTMLButtonElement[] = [];
+  private beatStepNodes: HTMLElement[] = [];
   private midiLab!: MidiLabPanel;
   private padInteraction!: PadInteraction;
   private patternIndex = 0;
@@ -57,6 +66,9 @@ export class BounceBoxApp {
   private effectWasActive = false;
   private shakeUntil = 0;
   private toastTimer: number | null = null;
+  private lastRenderedBeatStep = -1;
+  private lastRenderedBarBeat = '';
+  private lastRenderedEffectKey = '';
   private status: AppStatus = {
     tempo: this.physics.tempo,
     key: this.physics.key,
@@ -213,6 +225,7 @@ export class BounceBoxApp {
     this.beatNode = beatNode;
     this.effectReadoutNode = effectReadoutNode;
     this.toastNode = toastNode;
+    this.effectButtons = [...this.root.querySelectorAll<HTMLButtonElement>('[data-effect]')];
     this.midiLab = new MidiLabPanel(midiLabNode, (pattern) => this.applyImportedPattern(pattern));
     this.padInteraction = new PadInteraction({
       canvas: this.canvas,
@@ -257,18 +270,23 @@ export class BounceBoxApp {
 
       if (action === 'launch') {
         await this.startAudio();
-        this.physics.launchBall();
+        this.notifyBallCap(this.physics.launchBall(), 1);
       }
 
       if (action === 'launch-3') {
         await this.startAudio();
-        this.physics.launchBall(3);
+        this.notifyBallCap(this.physics.launchBall(3), 3);
       }
 
       if (action === 'rain') {
         await this.startAudio();
-        this.physics.rainBalls();
-        this.shakeUntil = performance.now() + 140;
+        const requestedBalls = this.physics.maxBallCount;
+        const addedBalls = this.physics.rainBalls(requestedBalls);
+        this.notifyBallCap(addedBalls, requestedBalls);
+
+        if (addedBalls > 0) {
+          this.shakeUntil = performance.now() + 110;
+        }
       }
 
       if (action === 'pattern') {
@@ -533,17 +551,27 @@ export class BounceBoxApp {
       intensity: Math.min(2.2, Math.max(0.6, (speed / 7) * scale)),
       kind
     });
+    this.capRipples();
   }
 
   private spawnParticles(pad: PadPattern, visual: ReturnType<typeof getRoleVisual>, intensity: number): void {
     const rect = this.canvas.getBoundingClientRect();
     const x = pad.x > 1 ? pad.x : pad.x * rect.width;
     const y = pad.y > 1 ? pad.y : pad.y * rect.height;
-    const count = Math.min(10, Math.max(3, Math.round(visual.particleCount * Math.min(1.2, intensity))));
     const now = performance.now();
+    const activeBalls = this.physics.activeBallCount;
+    const particleLimit = activeBalls > 4 ? busyMaxParticles : maxParticles;
+    const baseCount = Math.min(10, Math.max(3, Math.round(visual.particleCount * Math.min(1.2, intensity))));
+    const count = activeBalls > 4 ? Math.min(4, Math.max(2, Math.round(baseCount * 0.48))) : baseCount;
+    const availableParticles = particleLimit - this.particles.length;
+    const emitCount = Math.max(0, Math.min(count, availableParticles));
 
-    for (let index = 0; index < count; index += 1) {
-      const angle = (index / count) * Math.PI * 2 + Math.random() * 0.55;
+    if (emitCount <= 0) {
+      return;
+    }
+
+    for (let index = 0; index < emitCount; index += 1) {
+      const angle = (index / emitCount) * Math.PI * 2 + Math.random() * 0.55;
       const speed = visual.particleSpeed * (0.55 + Math.random() * 0.75);
       this.particles.push({
         id: `${pad.id}-spark-${now}-${index}`,
@@ -556,10 +584,6 @@ export class BounceBoxApp {
         lifeMs: 360 + Math.random() * 260,
         startedAt: now
       });
-    }
-
-    if (this.particles.length > 120) {
-      this.particles = this.particles.slice(-120);
     }
   }
 
@@ -645,7 +669,8 @@ export class BounceBoxApp {
 
   private resizeCanvas(): void {
     const rect = this.canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const maxDpr = rect.width <= 720 ? 1.5 : 2;
+    const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
 
     this.canvas.width = Math.round(rect.width * dpr);
     this.canvas.height = Math.round(rect.height * dpr);
@@ -693,6 +718,7 @@ export class BounceBoxApp {
           intensity: event.velocity,
           kind: 'loop'
         });
+        this.capRipples();
         this.status.lastTriggeredNote = `Loop ${event.note}`;
       }
     }
@@ -936,14 +962,24 @@ export class BounceBoxApp {
   }
 
   private updateTrails(snapshot: PhysicsSnapshot, width: number, height: number): void {
-    const liveBallIds = new Set(snapshot.balls.map((ball) => ball.id));
+    const liveBallIds = new Set<number>();
+    const maxTrailPoints = snapshot.balls.length > 4 ? busyTrailPoints : trailPoints;
+
+    for (const ball of snapshot.balls) {
+      liveBallIds.add(ball.id);
+    }
 
     for (const [id, points] of this.trails) {
-      if (!liveBallIds.has(id)) {
-        this.trails.set(
-          id,
-          points.map((point) => ({ ...point, age: point.age + 1 })).filter((point) => point.age < 18)
-        );
+      for (let index = points.length - 1; index >= 0; index -= 1) {
+        points[index].age += 1;
+
+        if (!liveBallIds.has(id) && points[index].age >= 16) {
+          points.splice(index, 1);
+        }
+      }
+
+      if (!points.length && !liveBallIds.has(id)) {
+        this.trails.delete(id);
       }
     }
 
@@ -956,11 +992,13 @@ export class BounceBoxApp {
         speed: ball.speed,
         age: 0
       };
-      this.trails.set(ball.id, [clippedPoint, ...existing.map((point) => ({ ...point, age: point.age + 1 }))].slice(0, 12));
+      existing.unshift(clippedPoint);
+      existing.length = Math.min(existing.length, maxTrailPoints);
+      this.trails.set(ball.id, existing);
     }
 
-    if (this.trails.size > 18) {
-      const liveIds = [...this.trails.keys()].slice(-18);
+    if (this.trails.size > this.physics.maxBallCount + 2) {
+      const liveIds = [...this.trails.keys()].slice(-(this.physics.maxBallCount + 2));
       this.trails = new Map(liveIds.map((id) => [id, this.trails.get(id) ?? []]));
     }
   }
@@ -987,7 +1025,8 @@ export class BounceBoxApp {
         ctx.restore();
       }
 
-      points.slice(0, 3).forEach((point, index) => {
+      for (let index = 0; index < Math.min(3, points.length); index += 1) {
+        const point = points[index];
         ctx.save();
         ctx.globalAlpha = Math.max(0, trailTheme.trailAlpha * 1.3 - index * 0.035);
         ctx.fillStyle = trailTheme.trail;
@@ -995,22 +1034,32 @@ export class BounceBoxApp {
         ctx.arc(point.x, point.y, Math.max(1.5, point.radius * (0.55 - index * 0.09)), 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
-      });
+      }
     }
   }
 
   private drawParticles(ctx: CanvasRenderingContext2D): void {
     const now = performance.now();
     const particleTheme = this.activeTheme.canvas.particles;
-    this.particles = this.particles.filter((particle) => now - particle.startedAt < particle.lifeMs);
+    let writeIndex = 0;
 
-    for (const particle of this.particles) {
+    ctx.save();
+
+    for (let index = 0; index < this.particles.length; index += 1) {
+      const particle = this.particles[index];
+      const age = now - particle.startedAt;
+
+      if (age >= particle.lifeMs) {
+        continue;
+      }
+
+      this.particles[writeIndex] = particle;
+      writeIndex += 1;
       const progress = (now - particle.startedAt) / particle.lifeMs;
       const ease = 1 - progress;
       const x = particle.x + particle.vx * progress * 46;
       const y = particle.y + particle.vy * progress * 46 + progress * progress * 12;
 
-      ctx.save();
       ctx.globalAlpha = ease * particleTheme.alpha;
       ctx.fillStyle = particle.color;
       ctx.shadowBlur = particleTheme.shadowBlur;
@@ -1018,17 +1067,28 @@ export class BounceBoxApp {
       ctx.beginPath();
       ctx.arc(x, y, particle.size * ease, 0, Math.PI * 2);
       ctx.fill();
-      ctx.restore();
     }
+
+    this.particles.length = writeIndex;
+    ctx.restore();
   }
 
   private drawRipples(ctx: CanvasRenderingContext2D): void {
     const now = performance.now();
     const rippleTheme = this.activeTheme.canvas.ripples;
-    this.ripples = this.ripples.filter((ripple) => now - ripple.startedAt < 540);
+    let writeIndex = 0;
 
-    for (const ripple of this.ripples) {
-      const progress = (now - ripple.startedAt) / 540;
+    for (let index = 0; index < this.ripples.length; index += 1) {
+      const ripple = this.ripples[index];
+      const age = now - ripple.startedAt;
+
+      if (age >= 540) {
+        continue;
+      }
+
+      this.ripples[writeIndex] = ripple;
+      writeIndex += 1;
+      const progress = age / 540;
       const bigMultiplier = ripple.kind === 'big' ? 1.45 : ripple.kind === 'loop' ? 0.82 : 1;
 
       ctx.save();
@@ -1047,6 +1107,8 @@ export class BounceBoxApp {
       ctx.stroke();
       ctx.restore();
     }
+
+    this.ripples.length = writeIndex;
   }
 
   private drawBalls(ctx: CanvasRenderingContext2D, snapshot: PhysicsSnapshot): void {
@@ -1139,25 +1201,42 @@ export class BounceBoxApp {
 
   private buildBeatGrid(): void {
     this.beatNode.innerHTML = Array.from({ length: 16 }, (_, index) => `<span data-step="${index}"></span>`).join('');
+    this.beatStepNodes = [...this.beatNode.querySelectorAll<HTMLElement>('span')];
   }
 
   private renderBeatGrid(transport: TransportState): void {
-    this.beatNode.querySelectorAll('span').forEach((node, index) => {
-      node.classList.toggle('is-active', index === transport.step % 16);
-      node.classList.toggle('is-downbeat', index % 4 === 0);
-    });
+    const activeStep = transport.step % 16;
+    const barBeat = `${transport.bar}.${transport.beat}`;
 
-    this.barBeatNode.textContent = `${transport.bar}.${transport.beat}`;
+    if (activeStep !== this.lastRenderedBeatStep) {
+      this.beatStepNodes.forEach((node, index) => {
+        node.classList.toggle('is-active', index === activeStep);
+        node.classList.toggle('is-downbeat', index % 4 === 0);
+      });
+      this.lastRenderedBeatStep = activeStep;
+    }
+
+    if (barBeat !== this.lastRenderedBarBeat) {
+      this.barBeatNode.textContent = barBeat;
+      this.lastRenderedBarBeat = barBeat;
+    }
   }
 
   private renderEffectStatus(): void {
     const activeEffect = this.performance.active;
     const remainingSeconds = this.performance.getRemainingSeconds();
+    const renderKey = activeEffect ? `${activeEffect.id}:${remainingSeconds}` : 'none';
+
+    if (renderKey === this.lastRenderedEffectKey) {
+      return;
+    }
+
+    this.lastRenderedEffectKey = renderKey;
 
     this.effectReadoutNode.hidden = !activeEffect;
     this.effectReadoutNode.textContent = activeEffect ? `${activeEffect.label} ${remainingSeconds}s` : '';
 
-    this.root.querySelectorAll<HTMLButtonElement>('[data-effect]').forEach((button) => {
+    this.effectButtons.forEach((button) => {
       const isActive = Boolean(activeEffect && button.dataset.effect === activeEffect.id);
       button.classList.toggle('is-effect-active', isActive);
 
@@ -1172,6 +1251,20 @@ export class BounceBoxApp {
         button.textContent = button.dataset.effect === 'gravity-flip' ? 'Gravity' : button.dataset.effect === 'slow-mo' ? 'Slow-Mo' : 'Orbit';
       }
     });
+  }
+
+  private notifyBallCap(addedBalls: number, requestedBalls: number): void {
+    if (addedBalls < requestedBalls) {
+      this.showToast(`Max ${this.physics.maxBallCount} balls.`);
+    }
+  }
+
+  private capRipples(): void {
+    const rippleLimit = this.physics.activeBallCount > 4 ? busyMaxRipples : maxRipples;
+
+    if (this.ripples.length > rippleLimit) {
+      this.ripples.splice(0, this.ripples.length - rippleLimit);
+    }
   }
 
   destroy(): void {

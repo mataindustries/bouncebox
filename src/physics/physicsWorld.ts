@@ -5,7 +5,16 @@ import { demoPatterns } from '../patterns/demoPatterns';
 
 type PadHitHandler = (pad: PadPattern, speed: number) => void;
 
+export const MAX_ACTIVE_BALLS = 6;
+
 const wallThickness = 96;
+const normalGravityY = 0.035;
+const gravityFlipY = -0.16;
+const slowMoGravityY = 0.015;
+const orbitGravityY = 0;
+const minSurfaceSpeed = 1.45;
+const targetSurfaceSpeed = 2.85;
+const maxSurfaceSpeed = 8.8;
 
 export class PhysicsWorld {
   private engine = Matter.Engine.create();
@@ -19,6 +28,8 @@ export class PhysicsWorld {
   private height = 480;
   private nextBallId = 1;
   private chaosTimer: number | null = null;
+  private pendingBallCount = 0;
+  private spawnTimers: number[] = [];
   private activeEffect: PerformanceEffectId | null = null;
   private readonly onPadHit: PadHitHandler;
 
@@ -27,7 +38,7 @@ export class PhysicsWorld {
 
   constructor(onPadHit: PadHitHandler) {
     this.onPadHit = onPadHit;
-    this.engine.gravity.y = 0.72;
+    this.setNormalGravity();
     this.loadPattern(demoPatterns[0]);
 
     Matter.Events.on(this.engine, 'collisionStart', (event) => {
@@ -52,24 +63,50 @@ export class PhysicsWorld {
     this.rebuildStaticBodies();
   }
 
-  launchBall(count = 1): void {
-    for (let index = 0; index < count; index += 1) {
-      window.setTimeout(() => this.addBall(), index * 110);
+  launchBall(count = 1): number {
+    const requestedCount = Math.max(1, Math.floor(count));
+    const launchCount = Math.min(requestedCount, this.availableBallSlots);
+
+    for (let index = 0; index < launchCount; index += 1) {
+      this.scheduleBall(index * 95, () => {
+        const angle = -0.28 + Math.random() * 0.56;
+        const speed = 3.2 + Math.random() * 1.6;
+
+        return {
+          x: this.width * (0.32 + Math.random() * 0.36),
+          y: this.height * (0.14 + Math.random() * 0.1),
+          velocity: {
+            x: Math.sin(angle) * speed + (Math.random() - 0.5) * 2.4,
+            y: Math.cos(angle) * speed
+          }
+        };
+      });
     }
+
+    return launchCount;
   }
 
-  rainBalls(count = 9): void {
-    const safeCount = Math.min(14, Math.max(4, count));
+  rainBalls(count = MAX_ACTIVE_BALLS): number {
+    const requestedCount = Math.min(MAX_ACTIVE_BALLS, Math.max(3, Math.floor(count)));
+    const rainCount = Math.min(requestedCount, this.availableBallSlots);
 
-    for (let index = 0; index < safeCount; index += 1) {
-      window.setTimeout(() => {
-        const x = this.width * (0.14 + (index / Math.max(1, safeCount - 1)) * 0.72);
-        this.addBall(x, 18 + Math.random() * 10, {
-          x: (Math.random() - 0.5) * 2.4,
-          y: 2.2 + Math.random() * 1.8
-        });
-      }, index * 95);
+    for (let index = 0; index < rainCount; index += 1) {
+      this.scheduleBall(index * 72, () => {
+        const spread = rainCount <= 1 ? 0.5 : index / (rainCount - 1);
+        const sideBias = spread - 0.5;
+
+        return {
+          x: this.width * (0.14 + spread * 0.72) + (Math.random() - 0.5) * this.width * 0.045,
+          y: this.height * (0.1 + Math.random() * 0.08),
+          velocity: {
+            x: sideBias * 3.4 + (Math.random() - 0.5) * 1.8,
+            y: -1.6 - Math.random() * 1.25
+          }
+        };
+      });
     }
+
+    return rainCount;
   }
 
   stopBalls(): void {
@@ -104,50 +141,55 @@ export class PhysicsWorld {
 
     if (effectId === 'gravity-flip') {
       this.engine.gravity.x = 0;
-      this.engine.gravity.y = -0.68;
-      this.kickBalls(0, -2.2);
+      this.engine.gravity.y = gravityFlipY;
+      this.kickBalls(0.8, -2.1);
     }
 
     if (effectId === 'slow-mo') {
-      this.engine.timing.timeScale = 0.42;
+      this.engine.timing.timeScale = 0.48;
       this.engine.gravity.x = 0;
-      this.engine.gravity.y = 0.46;
+      this.engine.gravity.y = slowMoGravityY;
     }
 
     if (effectId === 'orbit-chaos') {
       this.engine.gravity.x = 0;
-      this.engine.gravity.y = 0.12;
-      this.kickBalls(1.6, -1.2);
+      this.engine.gravity.y = orbitGravityY;
+      this.kickBalls(2.2, -1.4);
     }
   }
 
   resetPerformanceEffect(): void {
     this.activeEffect = null;
-    this.engine.gravity.x = 0;
-    this.engine.gravity.y = 0.72;
+    this.setNormalGravity();
     this.engine.timing.timeScale = 1;
   }
 
-  private addBall(x = this.width * (0.35 + Math.random() * 0.3), y?: number, velocity?: { x: number; y: number }): void {
+  private addBall(x = this.width * (0.35 + Math.random() * 0.3), y?: number, velocity?: { x: number; y: number }): boolean {
+    if (this.balls.length >= MAX_ACTIVE_BALLS) {
+      return false;
+    }
+
     const radius = Math.max(10, Math.min(16, this.width * 0.035));
     const ball = Matter.Bodies.circle(x, y ?? radius + 20, radius, {
       label: 'ball',
-      restitution: 0.96,
+      restitution: 0.985,
       friction: 0,
-      frictionAir: 0.002,
+      frictionAir: 0.0016,
       density: 0.0018,
       render: { visible: false }
     });
 
-    ball.plugin = { bounceBoxId: this.nextBallId };
-    Matter.Body.setVelocity(ball, velocity ?? { x: (Math.random() - 0.5) * 7, y: 3 + Math.random() * 2 });
+    ball.plugin = { bounceBoxId: this.nextBallId, lastNudgedAt: 0 };
+    Matter.Body.setVelocity(ball, velocity ?? { x: (Math.random() - 0.5) * 6, y: 2.2 + Math.random() * 1.8 });
 
     this.nextBallId += 1;
     this.balls.push(ball);
     Matter.Composite.add(this.engine.world, ball);
+    return true;
   }
 
   clearBalls(): void {
+    this.clearPendingSpawns();
     Matter.Composite.remove(this.engine.world, this.balls);
     this.balls = [];
     this.lastPadHitAt.clear();
@@ -160,7 +202,7 @@ export class PhysicsWorld {
     }
 
     this.engine.gravity.x = (Math.random() - 0.5) * 1.4;
-    this.engine.gravity.y = -0.35 - Math.random() * 0.35;
+    this.engine.gravity.y = -0.12 - Math.random() * 0.18;
 
     for (const ball of this.balls) {
       Matter.Body.setVelocity(ball, {
@@ -170,8 +212,7 @@ export class PhysicsWorld {
     }
 
     this.chaosTimer = window.setTimeout(() => {
-      this.engine.gravity.x = 0;
-      this.engine.gravity.y = 0.72;
+      this.setNormalGravity();
       this.chaosTimer = null;
     }, 3200);
   }
@@ -179,7 +220,7 @@ export class PhysicsWorld {
   step(deltaMs: number): void {
     this.applyOrbitForces();
     Matter.Engine.update(this.engine, Math.min(deltaMs, 1000 / 30));
-    this.nudgeSlowBalls();
+    this.stabilizeBalls();
     this.removeEscapedBalls();
   }
 
@@ -195,6 +236,14 @@ export class PhysicsWorld {
     return this.balls.length;
   }
 
+  get maxBallCount(): number {
+    return MAX_ACTIVE_BALLS;
+  }
+
+  get availableBallSlots(): number {
+    return Math.max(0, MAX_ACTIVE_BALLS - this.balls.length - this.pendingBallCount);
+  }
+
   private rebuildStaticBodies(): void {
     Matter.Composite.remove(this.engine.world, [...this.walls, ...this.pads]);
     this.walls = this.createWalls();
@@ -205,7 +254,7 @@ export class PhysicsWorld {
   private createWalls(): Matter.Body[] {
     const options: Matter.IChamferableBodyDefinition = {
       isStatic: true,
-      restitution: 1,
+      restitution: 1.02,
       friction: 0,
       render: { visible: false }
     };
@@ -326,16 +375,48 @@ export class PhysicsWorld {
     this.balls = keep;
   }
 
-  private nudgeSlowBalls(): void {
+  private stabilizeBalls(): void {
+    const now = performance.now();
+
     for (const ball of this.balls) {
       const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
-      const nearBottom = ball.position.y > this.height * 0.78;
+      const radius = ball.circleRadius ?? 12;
+      const nearLeft = ball.position.x < radius * 2.2;
+      const nearRight = ball.position.x > this.width - radius * 2.2;
+      const nearTop = ball.position.y < radius * 2.2;
+      const nearBottom = ball.position.y > this.height - radius * 2.2;
+      const inCorner = (nearLeft || nearRight) && (nearTop || nearBottom);
 
-      if (speed < 0.45 && nearBottom) {
+      if (speed > maxSurfaceSpeed) {
+        const scale = maxSurfaceSpeed / speed;
         Matter.Body.setVelocity(ball, {
-          x: (Math.random() - 0.5) * 3.2,
-          y: -4.2 - Math.random() * 1.8
+          x: ball.velocity.x * scale,
+          y: ball.velocity.y * scale
         });
+        continue;
+      }
+
+      if (nearBottom && ball.velocity.y > -0.15) {
+        Matter.Body.setVelocity(ball, {
+          x: ball.velocity.x + (Math.random() - 0.5) * 0.8,
+          y: -Math.max(1.9, Math.abs(ball.velocity.y) + 1.2)
+        });
+        ball.plugin.lastNudgedAt = now;
+        continue;
+      }
+
+      const lastNudgedAt = Number(ball.plugin.lastNudgedAt ?? 0);
+
+      if ((speed < minSurfaceSpeed || inCorner) && now - lastNudgedAt > 520) {
+        const centerAngle = Math.atan2(this.height * 0.5 - ball.position.y, this.width * 0.5 - ball.position.x);
+        const angle = inCorner ? centerAngle : Math.random() * Math.PI * 2;
+        const impulseSpeed = inCorner ? targetSurfaceSpeed + 0.55 : targetSurfaceSpeed;
+
+        Matter.Body.setVelocity(ball, {
+          x: Math.cos(angle) * impulseSpeed,
+          y: Math.sin(angle) * impulseSpeed
+        });
+        ball.plugin.lastNudgedAt = now;
       }
     }
   }
@@ -354,19 +435,54 @@ export class PhysicsWorld {
       return;
     }
 
-    const center = { x: this.width / 2, y: this.height / 2 };
+    const centerX = this.width / 2;
+    const centerY = this.height / 2;
 
     for (const ball of this.balls) {
-      const dx = center.x - ball.position.x;
-      const dy = center.y - ball.position.y;
+      const dx = centerX - ball.position.x;
+      const dy = centerY - ball.position.y;
       const distance = Math.max(80, Math.hypot(dx, dy));
-      const pull = 0.000018 * ball.mass;
-      const swirl = 0.000014 * ball.mass;
+      const pull = 0.000014 * ball.mass;
+      const swirl = 0.000018 * ball.mass;
 
       Matter.Body.applyForce(ball, ball.position, {
         x: (dx / distance) * pull + (-dy / distance) * swirl,
         y: (dy / distance) * pull + (dx / distance) * swirl
       });
     }
+  }
+
+  private scheduleBall(
+    delayMs: number,
+    createOptions: () => { x: number; y: number; velocity: { x: number; y: number } }
+  ): void {
+    this.pendingBallCount += 1;
+    const timer = window.setTimeout(() => {
+      this.spawnTimers = this.spawnTimers.filter((id) => id !== timer);
+      this.pendingBallCount = Math.max(0, this.pendingBallCount - 1);
+
+      if (this.balls.length >= MAX_ACTIVE_BALLS) {
+        return;
+      }
+
+      const options = createOptions();
+      this.addBall(options.x, options.y, options.velocity);
+    }, delayMs);
+
+    this.spawnTimers.push(timer);
+  }
+
+  private clearPendingSpawns(): void {
+    for (const timer of this.spawnTimers) {
+      window.clearTimeout(timer);
+    }
+
+    this.spawnTimers = [];
+    this.pendingBallCount = 0;
+  }
+
+  private setNormalGravity(): void {
+    this.engine.gravity.x = 0;
+    this.engine.gravity.y = normalGravityY;
   }
 }
