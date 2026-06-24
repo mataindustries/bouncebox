@@ -17,6 +17,21 @@ const maxSurfaceSpeed = 9.8;
 const turboMaxSurfaceSpeed = 11.4;
 const stalledMs = 1000;
 
+interface MotionPhysicsProfile {
+  ratio: number;
+  launchSpeedScale: number;
+  rainSpeedScale: number;
+  driftScale: number;
+  fieldPulseScale: number;
+  minSurfaceSpeed: number;
+  targetSurfaceSpeed: number;
+  stalledMs: number;
+  nudgeCooldownMs: number;
+  collisionCooldownMs: number;
+  bottomLift: number;
+  bottomBoost: number;
+}
+
 export class PhysicsWorld {
   private engine = Matter.Engine.create();
   private balls: Matter.Body[] = [];
@@ -32,6 +47,7 @@ export class PhysicsWorld {
   private pendingBallCount = 0;
   private spawnTimers: number[] = [];
   private activeEffect: PerformanceEffectId | null = null;
+  private motionLevel = 0;
   private readonly onPadHit: PadHitHandler;
 
   tempo = demoPatterns[0].tempo;
@@ -64,21 +80,31 @@ export class PhysicsWorld {
     this.rebuildStaticBodies();
   }
 
+  setMotionLevel(level: number): void {
+    this.motionLevel = Math.min(1, Math.max(-1, level));
+    this.setBounceEnergy(this.activeEffect === 'turbo');
+
+    for (const ball of this.balls) {
+      ball.frictionAir = this.getBallFrictionAir();
+    }
+  }
+
   launchBall(count = 1): number {
     const requestedCount = Math.max(1, Math.floor(count));
     const launchCount = Math.min(requestedCount, this.availableBallSlots);
 
     for (let index = 0; index < launchCount; index += 1) {
       this.scheduleBall(index * 95, () => {
+        const profile = this.motionProfile;
         const angle = -0.45 + Math.random() * 0.9;
-        const speed = 5 + Math.random() * 2.3 + index * 0.28;
+        const speed = (5 + Math.random() * 2.3 + index * 0.28) * profile.launchSpeedScale;
 
         return {
           x: this.width * (0.32 + Math.random() * 0.36),
           y: this.height * (0.14 + Math.random() * 0.1),
           velocity: {
-            x: Math.sin(angle) * speed + (Math.random() - 0.5) * 3.2,
-            y: Math.cos(angle) * speed + (Math.random() - 0.5) * 1.2
+            x: Math.sin(angle) * speed + (Math.random() - 0.5) * 3.2 * profile.driftScale,
+            y: Math.cos(angle) * speed + (Math.random() - 0.5) * 1.2 * profile.driftScale
           }
         };
       });
@@ -93,6 +119,7 @@ export class PhysicsWorld {
 
     for (let index = 0; index < rainCount; index += 1) {
       this.scheduleBall(index * 72, () => {
+        const profile = this.motionProfile;
         const spread = rainCount <= 1 ? 0.5 : index / (rainCount - 1);
         const sideBias = spread - 0.5;
 
@@ -100,8 +127,8 @@ export class PhysicsWorld {
           x: this.width * (0.14 + spread * 0.72) + (Math.random() - 0.5) * this.width * 0.045,
           y: this.height * (0.1 + Math.random() * 0.08),
           velocity: {
-            x: sideBias * 5.4 + (Math.random() - 0.5) * 2.8,
-            y: -2.8 - Math.random() * 2.2
+            x: (sideBias * 5.4 + (Math.random() - 0.5) * 2.8) * profile.rainSpeedScale,
+            y: (-2.8 - Math.random() * 2.2) * profile.rainSpeedScale
           }
         };
       });
@@ -175,9 +202,9 @@ export class PhysicsWorld {
     const radius = Math.max(10, Math.min(16, this.width * 0.035));
     const ball = Matter.Bodies.circle(x, y ?? radius + 20, radius, {
       label: 'ball',
-      restitution: this.activeEffect === 'turbo' ? 1.04 : 1.0,
+      restitution: this.getBallRestitution(this.activeEffect === 'turbo'),
       friction: 0,
-      frictionAir: 0.0008,
+      frictionAir: this.getBallFrictionAir(),
       density: 0.0018,
       render: { visible: false }
     });
@@ -229,17 +256,22 @@ export class PhysicsWorld {
 
   pulseField(strength = 1): void {
     const now = performance.now();
+    const profile = this.motionProfile;
+    const pulseStrength = strength * profile.fieldPulseScale;
 
     for (const ball of this.balls) {
       const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
 
-      if (speed > targetSurfaceSpeed * (this.activeEffect === 'turbo' ? 1.35 : 0.98)) {
+      if (speed > profile.targetSurfaceSpeed * (this.activeEffect === 'turbo' ? 1.35 : 0.98)) {
         continue;
       }
 
       const centerAngle = Math.atan2(ball.position.y - this.height * 0.5, ball.position.x - this.width * 0.5);
       const angle = centerAngle + Math.PI * 0.5 + (Math.random() - 0.5) * 0.75;
-      const impulseSpeed = Math.min(this.currentMaxSurfaceSpeed, Math.max(speed + 0.8 * strength, targetSurfaceSpeed * strength));
+      const impulseSpeed = Math.min(
+        this.currentMaxSurfaceSpeed,
+        Math.max(speed + 0.8 * pulseStrength, profile.targetSurfaceSpeed * pulseStrength)
+      );
 
       Matter.Body.setVelocity(ball, {
         x: ball.velocity.x * 0.45 + Math.cos(angle) * impulseSpeed,
@@ -280,7 +312,7 @@ export class PhysicsWorld {
   private createWalls(): Matter.Body[] {
     const options: Matter.IChamferableBodyDefinition = {
       isStatic: true,
-      restitution: this.activeEffect === 'turbo' ? 1.08 : 1.04,
+      restitution: this.getWallRestitution(this.activeEffect === 'turbo'),
       friction: 0,
       render: { visible: false }
     };
@@ -333,7 +365,7 @@ export class PhysicsWorld {
     const now = performance.now();
     const lastHitAt = this.lastPadHitAt.get(padId) ?? 0;
 
-    if (!padConfig || now - lastHitAt < 95) {
+    if (!padConfig || now - lastHitAt < this.motionProfile.collisionCooldownMs) {
       return;
     }
 
@@ -342,9 +374,10 @@ export class PhysicsWorld {
     this.activePadUntil.set(padId, now + 180);
 
     if (padConfig.kind === 'portal') {
+      const portalBoost = 0.82 + this.motionProfile.ratio * 0.36;
       Matter.Body.setVelocity(ball, {
-        x: ball.velocity.x * 1.12 + (Math.random() - 0.5) * 4.8,
-        y: Math.min(ball.velocity.y - 5.2, -2.4)
+        x: ball.velocity.x * (1.06 + this.motionProfile.ratio * 0.12) + (Math.random() - 0.5) * 4.8 * portalBoost,
+        y: Math.min(ball.velocity.y - 5.2 * portalBoost, -2.4)
       });
     }
 
@@ -402,6 +435,7 @@ export class PhysicsWorld {
 
   private stabilizeBalls(): void {
     const now = performance.now();
+    const profile = this.motionProfile;
 
     for (const ball of this.balls) {
       const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
@@ -423,8 +457,8 @@ export class PhysicsWorld {
 
       if (nearBottom && ball.velocity.y > -0.15) {
         Matter.Body.setVelocity(ball, {
-          x: ball.velocity.x + (Math.random() - 0.5) * 0.8,
-          y: -Math.max(1.9, Math.abs(ball.velocity.y) + 1.2)
+          x: ball.velocity.x + (Math.random() - 0.5) * 0.8 * profile.driftScale,
+          y: -Math.max(profile.bottomLift, Math.abs(ball.velocity.y) + profile.bottomBoost)
         });
         ball.plugin.lastNudgedAt = now;
         continue;
@@ -433,7 +467,7 @@ export class PhysicsWorld {
       const lastNudgedAt = Number(ball.plugin.lastNudgedAt ?? 0);
       const lowSpeedSince = Number(ball.plugin.lowSpeedSince ?? 0);
 
-      if (speed < minSurfaceSpeed) {
+      if (speed < profile.minSurfaceSpeed) {
         if (!lowSpeedSince) {
           ball.plugin.lowSpeedSince = now;
         }
@@ -441,10 +475,13 @@ export class PhysicsWorld {
         ball.plugin.lowSpeedSince = 0;
       }
 
-      if ((inCorner || (speed < minSurfaceSpeed && now - (lowSpeedSince || now) > stalledMs)) && now - lastNudgedAt > 460) {
+      if (
+        (inCorner || (speed < profile.minSurfaceSpeed && now - (lowSpeedSince || now) > profile.stalledMs)) &&
+        now - lastNudgedAt > profile.nudgeCooldownMs
+      ) {
         const centerAngle = Math.atan2(this.height * 0.5 - ball.position.y, this.width * 0.5 - ball.position.x);
         const angle = inCorner ? centerAngle : Math.random() * Math.PI * 2;
-        const impulseSpeed = inCorner ? targetSurfaceSpeed + 0.9 : targetSurfaceSpeed;
+        const impulseSpeed = inCorner ? profile.targetSurfaceSpeed + 0.9 : profile.targetSurfaceSpeed;
 
         Matter.Body.setVelocity(ball, {
           x: Math.cos(angle) * impulseSpeed,
@@ -526,7 +563,7 @@ export class PhysicsWorld {
       const speed = Math.hypot(ball.velocity.x, ball.velocity.y);
       const fallbackAngle = Math.random() * Math.PI * 2;
       const angle = speed > 0.01 ? Math.atan2(ball.velocity.y, ball.velocity.x) : fallbackAngle;
-      const nextSpeed = Math.min(this.currentMaxSurfaceSpeed, Math.max(targetSurfaceSpeed, speed * multiplier + extraSpeed));
+      const nextSpeed = Math.min(this.currentMaxSurfaceSpeed, Math.max(this.motionProfile.targetSurfaceSpeed, speed * multiplier + extraSpeed));
 
       Matter.Body.setVelocity(ball, {
         x: Math.cos(angle) * nextSpeed + (Math.random() - 0.5) * 0.7,
@@ -538,11 +575,12 @@ export class PhysicsWorld {
 
   private setBounceEnergy(turbo: boolean): void {
     for (const wall of this.walls) {
-      wall.restitution = turbo ? 1.08 : 1.04;
+      wall.restitution = this.getWallRestitution(turbo);
     }
 
     for (const ball of this.balls) {
-      ball.restitution = turbo ? 1.04 : 1.0;
+      ball.restitution = this.getBallRestitution(turbo);
+      ball.frictionAir = this.getBallFrictionAir();
     }
 
     for (const pad of this.pads) {
@@ -556,10 +594,46 @@ export class PhysicsWorld {
 
   private getPadRestitution(pad: PadPattern, turbo: boolean): number {
     const base = pad.kind === 'portal' ? 1.32 : pad.kind === 'drum' ? 1.24 : 1.16;
-    return turbo ? base + 0.06 : base;
+    const motionBoost = (this.motionProfile.ratio - 0.5) * 0.08;
+    return Math.min(1.42, Math.max(1.08, base + motionBoost + (turbo ? 0.06 : 0)));
+  }
+
+  private getWallRestitution(turbo: boolean): number {
+    const ratio = this.motionProfile.ratio;
+    return turbo ? 1.06 + ratio * 0.04 : 0.99 + ratio * 0.1;
+  }
+
+  private getBallRestitution(turbo: boolean): number {
+    const ratio = this.motionProfile.ratio;
+    return turbo ? 1.01 + ratio * 0.04 : 0.97 + ratio * 0.06;
+  }
+
+  private getBallFrictionAir(): number {
+    return 0.00115 - this.motionProfile.ratio * 0.00055;
   }
 
   private get currentMaxSurfaceSpeed(): number {
-    return this.activeEffect === 'turbo' ? turboMaxSurfaceSpeed : maxSurfaceSpeed;
+    const motionSpeedScale = 0.86 + this.motionProfile.ratio * 0.16;
+    const baseMaxSpeed = this.activeEffect === 'turbo' ? turboMaxSurfaceSpeed : maxSurfaceSpeed;
+    return baseMaxSpeed * motionSpeedScale;
+  }
+
+  private get motionProfile(): MotionPhysicsProfile {
+    const ratio = (this.motionLevel + 1) / 2;
+
+    return {
+      ratio,
+      launchSpeedScale: 0.74 + ratio * 0.54,
+      rainSpeedScale: 0.72 + ratio * 0.5,
+      driftScale: 0.72 + ratio * 0.55,
+      fieldPulseScale: 0.82 + ratio * 0.36,
+      minSurfaceSpeed: minSurfaceSpeed * (0.74 + ratio * 0.5),
+      targetSurfaceSpeed: targetSurfaceSpeed * (0.78 + ratio * 0.26),
+      stalledMs: stalledMs * (1.45 - ratio * 0.8),
+      nudgeCooldownMs: 760 - ratio * 460,
+      collisionCooldownMs: 138 - ratio * 60,
+      bottomLift: 1.65 + ratio * 0.7,
+      bottomBoost: 0.82 + ratio * 0.82
+    };
   }
 }

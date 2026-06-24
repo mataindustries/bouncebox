@@ -11,7 +11,7 @@ import { PhysicsWorld } from '../physics/physicsWorld';
 import { applyTheme } from '../theme/applyTheme';
 import { getTheme, themes } from '../theme/themes';
 import { loadStoredThemeId, storeThemeId } from '../theme/themeStore';
-import type { BounceBoxTheme, CanvasRoleTokens } from '../theme/themeTypes';
+import type { BounceBoxTheme, CanvasRoleTokens, ThemeId } from '../theme/themeTypes';
 import type { AppStatus, DemoPattern, GrooveEvent, PadPattern, PhysicsSnapshot, TransportState } from '../types';
 
 const maxParticles = 42;
@@ -32,6 +32,30 @@ const effectStatusIntervalMs = 140;
 type GroovePlaybackSource = 'live' | 'loop' | 'loop-tail' | 'echo' | 'stutter';
 type SideControlId = 'pitch' | 'motion';
 type PerformanceToggleId = 'quantize' | 'echoLatch' | 'autoPulse' | 'scaleLock';
+type MotionBand = 'low' | 'mid' | 'high';
+const grooveSnapshotSlots = ['A', 'B', 'C', 'D'] as const;
+type GrooveSnapshotSlot = (typeof grooveSnapshotSlots)[number];
+const grooveSnapshotStorageKey = 'bouncebox-groove-snapshots-v1';
+
+interface GrooveSnapshotMutationState {
+  active: boolean;
+  count: number;
+  basePattern: DemoPattern;
+}
+
+interface GrooveSnapshot {
+  version: 1;
+  slot: GrooveSnapshotSlot;
+  label: string;
+  pattern: DemoPattern;
+  tempo: number;
+  themeId: ThemeId;
+  pitchBendSemitones: number;
+  motionLevel: number;
+  toggles: Record<PerformanceToggleId, boolean>;
+  mutation: GrooveSnapshotMutationState;
+  effectId: PerformanceEffectId | null;
+}
 
 export class BounceBoxApp {
   private readonly root: HTMLElement;
@@ -61,8 +85,10 @@ export class BounceBoxApp {
   private motionReadoutNode!: HTMLElement;
   private pitchThumbNode!: HTMLElement;
   private motionThumbNode!: HTMLElement;
+  private snapshotSaveButton!: HTMLButtonElement;
   private toggleButtons: HTMLButtonElement[] = [];
   private effectButtons: HTMLButtonElement[] = [];
+  private snapshotButtons: HTMLButtonElement[] = [];
   private beatStepNodes: HTMLElement[] = [];
   private midiLab!: MidiLabPanel;
   private padInteraction!: PadInteraction;
@@ -100,6 +126,14 @@ export class BounceBoxApp {
   private pitchBendSemitones = 0;
   private motionLevel = 0;
   private lastMotionPulseAt = 0;
+  private lastMotionStatusBand: MotionBand = 'mid';
+  private lastMotionStatusAt = 0;
+  private motionVisualPulseStartedAt = 0;
+  private motionVisualPulseUntil = 0;
+  private motionVisualPulseStrength = 0;
+  private snapshotSaveArmed = false;
+  private activeSnapshotSlot: GrooveSnapshotSlot | null = null;
+  private grooveSnapshots: Record<GrooveSnapshotSlot, GrooveSnapshot> = createDefaultGrooveSnapshots();
   private performanceToggles: Record<PerformanceToggleId, boolean> = {
     quantize: true,
     echoLatch: false,
@@ -233,6 +267,13 @@ export class BounceBoxApp {
             <button type="button" data-action="clear-loop">LOOP CLR</button>
             <button type="button" data-action="clear">CLEAR</button>
           </div>
+          <div class="control-group control-group-snapshot">
+            <small>Snapshots</small>
+            <button type="button" class="snapshot-save" data-action="snapshot-save" aria-pressed="false">SAVE</button>
+            ${grooveSnapshotSlots
+              .map((slot) => `<button type="button" class="snapshot-button" data-snapshot-slot="${slot}" aria-label="Recall snapshot ${slot}">${slot}</button>`)
+              .join('')}
+          </div>
           <div class="control-group control-group-fx">
             <small>FX</small>
             <button type="button" data-action="effect" data-effect="gravity-flip">GRAV</button>
@@ -258,6 +299,7 @@ export class BounceBoxApp {
     const statusNode = this.root.querySelector<HTMLElement>('.status-panel');
     const audioButton = this.root.querySelector<HTMLButtonElement>('[data-action="audio"]');
     const captureButton = this.root.querySelector<HTMLButtonElement>('[data-action="capture"]');
+    const snapshotSaveButton = this.root.querySelector<HTMLButtonElement>('[data-action="snapshot-save"]');
     const performanceButton = this.root.querySelector<HTMLButtonElement>('[data-action="performance-mode"]');
     const exitPerformanceButton = this.root.querySelector<HTMLButtonElement>('[data-action="exit-performance"]');
     const themeSelect = this.root.querySelector<HTMLSelectElement>('[data-theme-select]');
@@ -282,6 +324,7 @@ export class BounceBoxApp {
       !statusNode ||
       !audioButton ||
       !captureButton ||
+      !snapshotSaveButton ||
       !performanceButton ||
       !exitPerformanceButton ||
       !themeSelect ||
@@ -309,6 +352,7 @@ export class BounceBoxApp {
     this.statusNode = statusNode;
     this.audioButton = audioButton;
     this.captureButton = captureButton;
+    this.snapshotSaveButton = snapshotSaveButton;
     this.performanceButton = performanceButton;
     this.exitPerformanceButton = exitPerformanceButton;
     this.themeSelect = themeSelect;
@@ -326,6 +370,7 @@ export class BounceBoxApp {
     this.motionThumbNode = motionThumbNode;
     this.effectButtons = [...this.root.querySelectorAll<HTMLButtonElement>('[data-effect]')];
     this.toggleButtons = [...this.root.querySelectorAll<HTMLButtonElement>('[data-toggle]')];
+    this.snapshotButtons = [...this.root.querySelectorAll<HTMLButtonElement>('[data-snapshot-slot]')];
     this.midiLab = new MidiLabPanel(midiLabNode, (pattern) => this.applyImportedPattern(pattern));
     this.padInteraction = new PadInteraction({
       canvas: this.canvas,
@@ -340,6 +385,8 @@ export class BounceBoxApp {
         this.canvas.classList.remove('is-dragging-pad');
       }
     });
+    this.grooveSnapshots = this.loadGrooveSnapshots();
+    this.physics.setMotionLevel(this.motionLevel);
 
     this.bindControls();
     this.bindSideControls();
@@ -353,6 +400,7 @@ export class BounceBoxApp {
     this.renderStatus();
     this.renderPatternHeader();
     this.renderPerformanceToggles();
+    this.renderSnapshotButtons();
     this.updateSideControlDisplays();
     this.loop();
   }
@@ -367,10 +415,27 @@ export class BounceBoxApp {
 
       const action = target.dataset.action;
       const toggleId = target.dataset.toggle as PerformanceToggleId | undefined;
+      const snapshotSlot = getGrooveSnapshotSlot(target.dataset.snapshotSlot);
+
+      if (snapshotSlot) {
+        if (this.snapshotSaveArmed) {
+          this.saveGrooveSnapshot(snapshotSlot);
+        } else {
+          this.loadGrooveSnapshot(snapshotSlot);
+        }
+
+        this.syncStatus();
+        return;
+      }
 
       if (toggleId) {
         this.togglePerformanceSwitch(toggleId);
         this.syncStatus();
+        return;
+      }
+
+      if (action === 'snapshot-save') {
+        this.toggleSnapshotSaveMode();
         return;
       }
 
@@ -538,12 +603,13 @@ export class BounceBoxApp {
       return;
     }
 
-    this.motionLevel = (ratio - 0.5) * 2;
-    this.updateSideControlDisplays();
+    this.setMotionLevel((ratio - 0.5) * 2, true);
 
     const now = performance.now();
     if (now - this.lastMotionPulseAt > 130) {
-      this.physics.pulseField(this.getMotionPulseStrength(0.92));
+      const pulseStrength = this.getMotionPulseStrength(0.92);
+      this.physics.pulseField(pulseStrength);
+      this.markMotionVisualPulse(pulseStrength);
       this.lastMotionPulseAt = now;
     }
   }
@@ -560,8 +626,83 @@ export class BounceBoxApp {
 
     this.motionControlNode.style.setProperty('--control-level', `${motionPercent}%`);
     this.motionThumbNode.style.bottom = `${motionPercent}%`;
-    this.motionReadoutNode.textContent = String(Math.round(motionPercent));
+    this.motionReadoutNode.textContent = this.getMotionBandLabel();
     this.motionControlNode.setAttribute('aria-valuenow', String(Math.round(motionPercent)));
+    this.motionControlNode.setAttribute('aria-valuetext', `${this.getMotionBandLabel()} ${Math.round(motionPercent)}`);
+  }
+
+  private setMotionLevel(level: number, announce = false): void {
+    const previousBand = this.getMotionBand();
+    this.motionLevel = Math.min(1, Math.max(-1, level));
+    this.physics.setMotionLevel(this.motionLevel);
+    this.updateSideControlDisplays();
+    this.shell.classList.toggle('is-high-motion', this.getMotionBand() === 'high');
+
+    if (announce) {
+      this.announceMotionChange(previousBand);
+    }
+  }
+
+  private getMotionRatio(): number {
+    return (this.motionLevel + 1) / 2;
+  }
+
+  private getMotionBand(): MotionBand {
+    const ratio = this.getMotionRatio();
+
+    if (ratio < 0.34) {
+      return 'low';
+    }
+
+    if (ratio > 0.66) {
+      return 'high';
+    }
+
+    return 'mid';
+  }
+
+  private getMotionBandLabel(band = this.getMotionBand()): string {
+    const labels: Record<MotionBand, string> = {
+      low: 'LOW',
+      mid: 'MID',
+      high: 'HIGH'
+    };
+
+    return labels[band];
+  }
+
+  private announceMotionChange(previousBand: MotionBand): void {
+    const band = this.getMotionBand();
+    const now = performance.now();
+
+    if (band === previousBand && band === this.lastMotionStatusBand && now - this.lastMotionStatusAt < 900) {
+      return;
+    }
+
+    this.lastMotionStatusBand = band;
+    this.lastMotionStatusAt = now;
+    this.showToast(`Motion: ${this.formatMotionBandName(band)} \u2014 ${this.getMotionStatusDetail(band)}`);
+  }
+
+  private formatMotionBandName(band: MotionBand): string {
+    return band.charAt(0).toUpperCase() + band.slice(1);
+  }
+
+  private getMotionStatusDetail(band: MotionBand): string {
+    const details: Record<MotionBand, string> = {
+      low: 'calmer bounce + wider hit spacing.',
+      mid: 'balanced groove response.',
+      high: 'stronger pulse + denser echo.'
+    };
+
+    return details[band];
+  }
+
+  private markMotionVisualPulse(strength: number): void {
+    const now = performance.now();
+    this.motionVisualPulseStartedAt = now;
+    this.motionVisualPulseUntil = now + 360;
+    this.motionVisualPulseStrength = Math.min(1.5, Math.max(0.2, strength));
   }
 
   private togglePerformanceSwitch(toggleId: PerformanceToggleId): void {
@@ -579,7 +720,9 @@ export class BounceBoxApp {
     }
 
     if (toggleId === 'autoPulse' && this.performanceToggles.autoPulse) {
-      this.physics.pulseField(this.getMotionPulseStrength(1));
+      const pulseStrength = this.getMotionPulseStrength(1);
+      this.physics.pulseField(pulseStrength);
+      this.markMotionVisualPulse(pulseStrength);
     }
 
     if (toggleId === 'scaleLock') {
@@ -705,6 +848,179 @@ export class BounceBoxApp {
     this.syncStatus();
   }
 
+  private toggleSnapshotSaveMode(): void {
+    this.snapshotSaveArmed = !this.snapshotSaveArmed;
+    this.renderSnapshotButtons();
+    this.showToast(this.snapshotSaveArmed ? 'Snapshot SAVE armed: tap A-D to store.' : 'Snapshot SAVE canceled.');
+  }
+
+  private saveGrooveSnapshot(slot: GrooveSnapshotSlot): void {
+    this.grooveSnapshots = {
+      ...this.grooveSnapshots,
+      [slot]: this.createCurrentGrooveSnapshot(slot)
+    };
+    this.storeGrooveSnapshots();
+    this.snapshotSaveArmed = false;
+    this.activeSnapshotSlot = slot;
+    this.renderSnapshotButtons();
+    this.showToast(`Snapshot ${slot} saved.`);
+  }
+
+  private loadGrooveSnapshot(slot: GrooveSnapshotSlot): void {
+    const snapshot = this.grooveSnapshots[slot] ?? createDefaultGrooveSnapshots()[slot];
+    this.applyGrooveSnapshot(snapshot);
+    this.snapshotSaveArmed = false;
+    this.activeSnapshotSlot = slot;
+    this.renderSnapshotButtons();
+    this.showToast(`Snapshot ${slot} loaded.`);
+  }
+
+  private createCurrentGrooveSnapshot(slot: GrooveSnapshotSlot): GrooveSnapshot {
+    return {
+      version: 1,
+      slot,
+      label: `User snapshot ${slot}`,
+      pattern: clonePattern(this.currentPattern),
+      tempo: this.transport.getTempo(),
+      themeId: this.activeTheme.id,
+      pitchBendSemitones: this.pitchBendSemitones,
+      motionLevel: this.motionLevel,
+      toggles: { ...this.performanceToggles },
+      mutation: {
+        active: this.hasActiveMutation,
+        count: this.mutationCount,
+        basePattern: clonePattern(this.mutationBasePattern)
+      },
+      effectId: this.performance.active?.id ?? null
+    };
+  }
+
+  private applyGrooveSnapshot(snapshot: GrooveSnapshot): void {
+    this.clearScheduledFxTimers();
+    this.performance.clear();
+    this.physics.resetPerformanceEffect();
+    this.effectWasActive = false;
+    this.effectReadoutNode.hidden = true;
+
+    this.performanceToggles = {
+      quantize: snapshot.toggles.quantize,
+      echoLatch: snapshot.toggles.echoLatch,
+      autoPulse: snapshot.toggles.autoPulse,
+      scaleLock: snapshot.toggles.scaleLock
+    };
+    this.renderPerformanceToggles();
+
+    this.setTheme(snapshot.themeId);
+    this.activatePattern(clonePattern(snapshot.pattern), 'builtin');
+    this.mutationBasePattern = clonePattern(snapshot.mutation.basePattern);
+    this.mutationCount = Math.max(0, Math.floor(snapshot.mutation.count));
+    this.hasActiveMutation = snapshot.mutation.active;
+    this.pitchBendSemitones = Math.min(12, Math.max(-12, Math.round(snapshot.pitchBendSemitones)));
+    this.setMotionLevel(snapshot.motionLevel, false);
+    this.setTempo(snapshot.tempo);
+
+    const effectToStart = snapshot.effectId ?? (this.performanceToggles.echoLatch ? 'echo' : null);
+    if (effectToStart) {
+      this.startPerformanceEffect(effectToStart, { seedRecentHits: false });
+    } else {
+      this.renderEffectStatus(true);
+    }
+
+    this.status.lastTriggeredNote = snapshot.label;
+    this.markMotionVisualPulse(this.getMotionPulseStrength(0.8));
+    this.syncStatus();
+  }
+
+  private loadGrooveSnapshots(): Record<GrooveSnapshotSlot, GrooveSnapshot> {
+    const defaults = createDefaultGrooveSnapshots();
+
+    try {
+      const stored = window.localStorage.getItem(grooveSnapshotStorageKey);
+
+      if (!stored) {
+        this.storeGrooveSnapshots(defaults);
+        return defaults;
+      }
+
+      const parsed = JSON.parse(stored) as unknown;
+      const storedSnapshots = isRecord(parsed) ? parsed : {};
+      const snapshots = grooveSnapshotSlots.reduce(
+        (result, slot) => {
+          result[slot] = this.sanitizeStoredGrooveSnapshot(slot, storedSnapshots[slot], defaults[slot]);
+          return result;
+        },
+        {} as Record<GrooveSnapshotSlot, GrooveSnapshot>
+      );
+
+      this.storeGrooveSnapshots(snapshots);
+      return snapshots;
+    } catch {
+      return defaults;
+    }
+  }
+
+  private sanitizeStoredGrooveSnapshot(slot: GrooveSnapshotSlot, value: unknown, fallback: GrooveSnapshot): GrooveSnapshot {
+    if (!isRecord(value)) {
+      return fallback;
+    }
+
+    const toggles = isRecord(value.toggles) ? value.toggles : {};
+    const mutation = isRecord(value.mutation) ? value.mutation : {};
+    const pattern = isDemoPatternLike(value.pattern) ? clonePattern(value.pattern) : clonePattern(fallback.pattern);
+    const basePattern = isDemoPatternLike(mutation.basePattern) ? clonePattern(mutation.basePattern) : clonePattern(fallback.mutation.basePattern);
+    const effectId = isPerformanceEffectId(value.effectId) ? value.effectId : null;
+
+    return {
+      version: 1,
+      slot,
+      label: typeof value.label === 'string' && value.label.trim() ? value.label.slice(0, 48) : fallback.label,
+      pattern,
+      tempo: clampNumber(value.tempo, 72, 180, fallback.tempo),
+      themeId: getTheme(typeof value.themeId === 'string' ? value.themeId : fallback.themeId).id,
+      pitchBendSemitones: clampNumber(value.pitchBendSemitones, -12, 12, fallback.pitchBendSemitones),
+      motionLevel: clampNumber(value.motionLevel, -1, 1, fallback.motionLevel),
+      toggles: {
+        quantize: typeof toggles.quantize === 'boolean' ? toggles.quantize : fallback.toggles.quantize,
+        echoLatch: typeof toggles.echoLatch === 'boolean' ? toggles.echoLatch : fallback.toggles.echoLatch,
+        autoPulse: typeof toggles.autoPulse === 'boolean' ? toggles.autoPulse : fallback.toggles.autoPulse,
+        scaleLock: typeof toggles.scaleLock === 'boolean' ? toggles.scaleLock : fallback.toggles.scaleLock
+      },
+      mutation: {
+        active: typeof mutation.active === 'boolean' ? mutation.active : fallback.mutation.active,
+        count: clampNumber(mutation.count, 0, 64, fallback.mutation.count),
+        basePattern
+      },
+      effectId
+    };
+  }
+
+  private storeGrooveSnapshots(snapshots: Record<GrooveSnapshotSlot, GrooveSnapshot> = this.grooveSnapshots): void {
+    try {
+      window.localStorage.setItem(grooveSnapshotStorageKey, JSON.stringify(snapshots));
+    } catch {
+      // Embedded/mobile previews can block storage; snapshots still work for the session.
+    }
+  }
+
+  private renderSnapshotButtons(): void {
+    this.snapshotSaveButton.classList.toggle('is-save-armed', this.snapshotSaveArmed);
+    this.snapshotSaveButton.setAttribute('aria-pressed', String(this.snapshotSaveArmed));
+
+    for (const button of this.snapshotButtons) {
+      const slot = getGrooveSnapshotSlot(button.dataset.snapshotSlot);
+
+      if (!slot) {
+        continue;
+      }
+
+      const snapshot = this.grooveSnapshots[slot];
+      const action = this.snapshotSaveArmed ? 'Save current state to' : 'Recall';
+      button.classList.toggle('is-snapshot-active', this.activeSnapshotSlot === slot);
+      button.setAttribute('aria-label', `${action} snapshot ${slot}: ${snapshot.label}`);
+      button.title = `${slot}: ${snapshot.label}`;
+    }
+  }
+
   private setPerformanceMode(enabled: boolean): void {
     this.performanceMode = enabled;
     this.shell.classList.toggle('is-performance', enabled);
@@ -721,7 +1037,7 @@ export class BounceBoxApp {
     window.setTimeout(() => this.resizeCanvas(), 60);
   }
 
-  private startPerformanceEffect(effectId: PerformanceEffectId): void {
+  private startPerformanceEffect(effectId: PerformanceEffectId, options: { seedRecentHits?: boolean } = {}): void {
     this.clearScheduledFxTimers();
     this.performance.start(effectId);
     this.physics.applyPerformanceEffect(effectId);
@@ -729,14 +1045,16 @@ export class BounceBoxApp {
     this.shakeUntil = performance.now() + (effectId === 'turbo' ? 220 : 140);
 
     if (effectId === 'turbo') {
-      this.physics.pulseField(1.35);
+      const pulseStrength = this.getMotionPulseStrength(1.2);
+      this.physics.pulseField(pulseStrength);
+      this.markMotionVisualPulse(pulseStrength);
     }
 
-    if (effectId === 'echo') {
+    if (effectId === 'echo' && options.seedRecentHits !== false) {
       this.seedEchoFromRecentHits();
     }
 
-    if (effectId === 'stutter') {
+    if (effectId === 'stutter' && options.seedRecentHits !== false) {
       this.scheduleStutterBurst(this.lastTriggeredEvent, performance.now(), true);
     }
 
@@ -1008,8 +1326,10 @@ export class BounceBoxApp {
 
   private playLoopSteps(now: number): void {
     for (const step of this.transport.consumeAdvancedSteps(now)) {
-      if (this.performanceToggles.autoPulse && step % 8 === 0) {
-        this.physics.pulseField(this.getMotionPulseStrength(this.performance.active?.id === 'turbo' ? 1.25 : 1));
+      if (this.performanceToggles.autoPulse && step % this.getAutoPulseIntervalSteps() === 0) {
+        const pulseStrength = this.getMotionPulseStrength(this.performance.active?.id === 'turbo' ? 1.25 : 1);
+        this.physics.pulseField(pulseStrength);
+        this.markMotionVisualPulse(pulseStrength);
       }
 
       const events = this.loopRecorder.getEventsForStep(step);
@@ -1118,7 +1438,8 @@ export class BounceBoxApp {
       ? baseDelayMs + Math.max(0, force ? quantized.delayMs : quantized.delayMs + stepMs)
       : baseDelayMs + (force ? 0 : stepMs * 0.5);
     const availableRepeats = Math.max(0, maxScheduledFxTimers - this.scheduledFxTimers.length);
-    const repeats = (this.motionLevel > 0.48 ? [0.62, 0.52, 0.42, 0.34] : this.motionLevel < -0.48 ? [0.54, 0.36] : [0.62, 0.5, 0.4, 0.32]).slice(
+    const stutterProfile = this.getStutterProfile();
+    const repeats = stutterProfile.velocityScales.slice(
       0,
       Math.min(this.performanceMode || this.physics.activeBallCount >= 4 ? 3 : 4, availableRepeats)
     );
@@ -1128,10 +1449,10 @@ export class BounceBoxApp {
     }
 
     this.lastStutterAt = now;
-    this.stutterPulseUntil = now + startDelayMs + stepMs * repeats.length;
+    this.stutterPulseUntil = now + startDelayMs + stepMs * stutterProfile.intervalSteps * repeats.length;
 
     repeats.forEach((velocityScale, index) => {
-      const delayMs = startDelayMs + stepMs * index;
+      const delayMs = startDelayMs + stepMs * stutterProfile.intervalSteps * index;
       this.audio.triggerEvent(event, delayMs, {
         velocityScale,
         filterBrightness: this.getPlaybackBrightness(performance.now() + delayMs),
@@ -1209,19 +1530,19 @@ export class BounceBoxApp {
   }
 
   private getEchoRepeats(): Array<{ steps: number; velocityScale: number }> {
-    if (this.motionLevel > 0.5) {
+    if (this.getMotionBand() === 'high') {
       return [
-        { steps: 1.5, velocityScale: 0.5 },
-        { steps: 3, velocityScale: 0.34 },
-        { steps: 4.5, velocityScale: 0.22 },
-        { steps: 6, velocityScale: 0.14 }
+        { steps: 1, velocityScale: 0.42 },
+        { steps: 2, velocityScale: 0.32 },
+        { steps: 3.5, velocityScale: 0.22 },
+        { steps: 5, velocityScale: 0.14 }
       ];
     }
 
-    if (this.motionLevel < -0.5) {
+    if (this.getMotionBand() === 'low') {
       return [
-        { steps: 3, velocityScale: 0.34 },
-        { steps: 6, velocityScale: 0.18 }
+        { steps: 4, velocityScale: 0.25 },
+        { steps: 8, velocityScale: 0.12 }
       ];
     }
 
@@ -1232,12 +1553,36 @@ export class BounceBoxApp {
     ];
   }
 
+  private getStutterProfile(): { intervalSteps: number; velocityScales: number[] } {
+    if (this.getMotionBand() === 'high') {
+      return { intervalSteps: 0.5, velocityScales: [0.56, 0.48, 0.38, 0.28] };
+    }
+
+    if (this.getMotionBand() === 'low') {
+      return { intervalSteps: 1.25, velocityScales: [0.46, 0.28] };
+    }
+
+    return { intervalSteps: 0.85, velocityScales: [0.58, 0.46, 0.34] };
+  }
+
   private getTempoDelay(stepMs: number, steps: number): number {
     return this.performanceToggles.quantize ? stepMs * steps : stepMs * steps * 0.82;
   }
 
+  private getAutoPulseIntervalSteps(): number {
+    if (this.getMotionBand() === 'high') {
+      return 4;
+    }
+
+    if (this.getMotionBand() === 'low') {
+      return 16;
+    }
+
+    return 8;
+  }
+
   private getMotionPulseStrength(base = 1): number {
-    return base * (0.62 + ((this.motionLevel + 1) / 2) * 0.92);
+    return base * (0.38 + this.getMotionRatio() * 1.12);
   }
 
   private getPitchBendForEvent(event: GrooveEvent): number {
@@ -1264,6 +1609,7 @@ export class BounceBoxApp {
     }
 
     this.drawBackground(ctx, width, height, transport, activeBallCount);
+    this.drawMotionPulseOverlay(ctx, width, height, activeBallCount);
     this.drawPerformanceOverlay(ctx, width, height, transport, activeBallCount);
     this.updateTrails(snapshot, width, height);
     this.drawTrails(ctx, activeBallCount);
@@ -1277,6 +1623,41 @@ export class BounceBoxApp {
 
   private shouldReduceCanvasFx(activeBallCount: number): boolean {
     return this.performanceMode && activeBallCount >= 4;
+  }
+
+  private drawMotionPulseOverlay(ctx: CanvasRenderingContext2D, width: number, height: number, activeBallCount: number): void {
+    const theme = this.activeTheme.canvas.background;
+    const now = performance.now();
+    const ratio = this.getMotionRatio();
+    const reduceCanvasFx = this.shouldReduceCanvasFx(activeBallCount);
+    const highMotion = Math.max(0, (ratio - 0.66) / 0.34);
+    const pulseProgress =
+      now < this.motionVisualPulseUntil
+        ? Math.min(1, Math.max(0, (now - this.motionVisualPulseStartedAt) / Math.max(1, this.motionVisualPulseUntil - this.motionVisualPulseStartedAt)))
+        : 1;
+    const pulse = now < this.motionVisualPulseUntil ? (1 - pulseProgress) * this.motionVisualPulseStrength * (0.18 + ratio * 0.82) : 0;
+    const ambient = highMotion * (reduceCanvasFx ? 0.018 : 0.034);
+    const alpha = Math.min(reduceCanvasFx ? 0.055 : 0.095, ambient + pulse * (reduceCanvasFx ? 0.026 : 0.045));
+
+    if (alpha <= 0.002) {
+      return;
+    }
+
+    ctx.save();
+    ctx.fillStyle = colorWithAlpha(theme.horizon, alpha);
+    ctx.fillRect(0, 0, width, height);
+
+    if (!reduceCanvasFx && highMotion > 0.15) {
+      const sweepX = width * ((now / 1800) % 1);
+      const sweep = ctx.createLinearGradient(sweepX - 48, 0, sweepX + 48, 0);
+      sweep.addColorStop(0, colorWithAlpha(theme.glow, 0));
+      sweep.addColorStop(0.5, colorWithAlpha(theme.glow, 0.04 * highMotion));
+      sweep.addColorStop(1, colorWithAlpha(theme.glow, 0));
+      ctx.fillStyle = sweep;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    ctx.restore();
   }
 
   private drawPerformanceOverlay(
@@ -1984,6 +2365,146 @@ export class BounceBoxApp {
     window.cancelAnimationFrame(this.animationFrame);
     this.clearScheduledFxTimers();
   }
+}
+
+function createDefaultGrooveSnapshots(): Record<GrooveSnapshotSlot, GrooveSnapshot> {
+  const cleanPattern = clonePattern(demoPatterns[0]);
+  const fastPattern = clonePattern(demoPatterns[1]);
+  const echoPattern = clonePattern(demoPatterns[2]);
+  const chaosBasePattern = clonePattern(demoPatterns[1]);
+  const chaosMutation = mutatePattern(chaosBasePattern, 2, { scaleLock: false });
+  const chaosPattern = chaosMutation.changed ? chaosMutation.pattern : clonePattern(chaosBasePattern);
+
+  return {
+    A: createGrooveSnapshot({
+      slot: 'A',
+      label: 'Clean 808 groove',
+      pattern: cleanPattern,
+      tempo: 124,
+      themeId: '808-heritage',
+      motionLevel: -0.38,
+      toggles: createPerformanceToggleState(),
+      mutation: { active: false, count: 0, basePattern: cleanPattern },
+      effectId: null
+    }),
+    B: createGrooveSnapshot({
+      slot: 'B',
+      label: 'Fast bounce',
+      pattern: fastPattern,
+      tempo: 148,
+      themeId: '808-heritage',
+      motionLevel: 0.58,
+      toggles: createPerformanceToggleState({ autoPulse: true }),
+      mutation: { active: false, count: 0, basePattern: fastPattern },
+      effectId: 'turbo'
+    }),
+    C: createGrooveSnapshot({
+      slot: 'C',
+      label: 'Echo dub',
+      pattern: echoPattern,
+      tempo: 104,
+      themeId: '808-heritage',
+      motionLevel: 0.22,
+      toggles: createPerformanceToggleState({ echoLatch: true }),
+      mutation: { active: false, count: 0, basePattern: echoPattern },
+      effectId: 'echo'
+    }),
+    D: createGrooveSnapshot({
+      slot: 'D',
+      label: 'Chaos performance',
+      pattern: chaosPattern,
+      tempo: 136,
+      themeId: '808-heritage',
+      motionLevel: 0.86,
+      toggles: createPerformanceToggleState({ quantize: false, scaleLock: false }),
+      mutation: { active: true, count: 2, basePattern: chaosBasePattern },
+      effectId: 'orbit-chaos'
+    })
+  };
+}
+
+function createGrooveSnapshot(input: {
+  slot: GrooveSnapshotSlot;
+  label: string;
+  pattern: DemoPattern;
+  tempo: number;
+  themeId: ThemeId;
+  motionLevel: number;
+  toggles: Record<PerformanceToggleId, boolean>;
+  mutation: GrooveSnapshotMutationState;
+  effectId: PerformanceEffectId | null;
+}): GrooveSnapshot {
+  return {
+    version: 1,
+    slot: input.slot,
+    label: input.label,
+    pattern: clonePattern(input.pattern),
+    tempo: input.tempo,
+    themeId: input.themeId,
+    pitchBendSemitones: 0,
+    motionLevel: input.motionLevel,
+    toggles: { ...input.toggles },
+    mutation: {
+      active: input.mutation.active,
+      count: input.mutation.count,
+      basePattern: clonePattern(input.mutation.basePattern)
+    },
+    effectId: input.effectId
+  };
+}
+
+function createPerformanceToggleState(
+  overrides: Partial<Record<PerformanceToggleId, boolean>> = {}
+): Record<PerformanceToggleId, boolean> {
+  return {
+    quantize: overrides.quantize ?? true,
+    echoLatch: overrides.echoLatch ?? false,
+    autoPulse: overrides.autoPulse ?? true,
+    scaleLock: overrides.scaleLock ?? true
+  };
+}
+
+function getGrooveSnapshotSlot(value: string | undefined): GrooveSnapshotSlot | null {
+  return grooveSnapshotSlots.includes(value as GrooveSnapshotSlot) ? (value as GrooveSnapshotSlot) : null;
+}
+
+function isPerformanceEffectId(value: unknown): value is PerformanceEffectId {
+  return (
+    value === 'gravity-flip' ||
+    value === 'turbo' ||
+    value === 'orbit-chaos' ||
+    value === 'echo' ||
+    value === 'stutter' ||
+    value === 'filter-sweep'
+  );
+}
+
+function isDemoPatternLike(value: unknown): value is DemoPattern {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.tempo === 'number' &&
+    typeof value.key === 'string' &&
+    typeof value.bars === 'number' &&
+    Array.isArray(value.timeSignature) &&
+    Array.isArray(value.instruments) &&
+    Array.isArray(value.pads) &&
+    Array.isArray(value.seedSteps) &&
+    value.instruments.every((instrument) => isRecord(instrument) && Array.isArray(instrument.notes)) &&
+    value.pads.every((pad) => isRecord(pad) && (pad.notes === undefined || Array.isArray(pad.notes)))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
 
 function colorWithAlpha(color: string, alpha: number): string {
