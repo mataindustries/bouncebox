@@ -28,17 +28,20 @@ interface TriggerOptions {
   velocity?: number;
   delayMs?: number;
   filterBrightness?: number;
+  pitchBendSemitones?: number;
 }
 
 interface TriggerEventOptions {
   velocityScale?: number;
   filterBrightness?: number;
+  pitchBendSemitones?: number;
 }
 
 export class AudioEngine {
   private context: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
+  private noiseBuffers = new Map<string, AudioBuffer>();
 
   get isReady(): boolean {
     return this.context?.state === 'running';
@@ -76,7 +79,8 @@ export class AudioEngine {
       notes: event.notes,
       velocity: event.velocity * (options.velocityScale ?? 1),
       delayMs,
-      filterBrightness: options.filterBrightness
+      filterBrightness: options.filterBrightness,
+      pitchBendSemitones: options.pitchBendSemitones
     });
   }
 
@@ -96,6 +100,7 @@ export class AudioEngine {
     const when = this.context.currentTime + (options.delayMs ?? 0) / 1000;
     const velocity = Math.min(0.95, Math.max(0.08, options.velocity ?? 0.7));
     const filterBrightness = clampBrightness(options.filterBrightness ?? 1);
+    const pitchBendSemitones = options.pitchBendSemitones ?? 0;
 
     if (options.role === 'kick') {
       this.playKick(when, velocity, filterBrightness);
@@ -113,21 +118,21 @@ export class AudioEngine {
     }
 
     if (options.role === 'bass') {
-      this.playBass(options.note, when, velocity, filterBrightness);
+      this.playBass(options.note, when, velocity, filterBrightness, pitchBendSemitones);
       return;
     }
 
     if (options.role === 'pad' || options.role === 'chord' || options.kind === 'chord') {
-      this.playChord(options.notes ?? [options.note], when, velocity, filterBrightness);
+      this.playChord(options.notes ?? [options.note], when, velocity, filterBrightness, pitchBendSemitones);
       return;
     }
 
     if (options.role === 'portal' || options.role === 'arp' || options.role === 'fx') {
-      this.playArp(options.notes ?? [options.note], when, velocity, filterBrightness);
+      this.playArp(options.notes ?? [options.note], when, velocity, filterBrightness, pitchBendSemitones);
       return;
     }
 
-    this.playPluck(options.note, when, velocity, filterBrightness);
+    this.playPluck(options.note, when, velocity, filterBrightness, pitchBendSemitones);
   }
 
   private playKick(when: number, velocity: number, filterBrightness: number): void {
@@ -231,7 +236,7 @@ export class AudioEngine {
     source.start(when);
   }
 
-  private playBass(note: NoteName, when: number, velocity: number, filterBrightness: number): void {
+  private playBass(note: NoteName, when: number, velocity: number, filterBrightness: number, pitchBendSemitones: number): void {
     this.playTonal(note, when, velocity, {
       type: 'sawtooth',
       attack: 0.012,
@@ -239,10 +244,10 @@ export class AudioEngine {
       gain: 0.19,
       filterStart: 820,
       filterEnd: 230
-    }, filterBrightness);
+    }, filterBrightness, pitchBendSemitones);
   }
 
-  private playPluck(note: NoteName, when: number, velocity: number, filterBrightness: number): void {
+  private playPluck(note: NoteName, when: number, velocity: number, filterBrightness: number, pitchBendSemitones: number): void {
     this.playTonal(note, when, velocity, {
       type: 'triangle',
       attack: 0.008,
@@ -250,10 +255,10 @@ export class AudioEngine {
       gain: 0.145,
       filterStart: 2900,
       filterEnd: 1050
-    }, filterBrightness);
+    }, filterBrightness, pitchBendSemitones);
   }
 
-  private playChord(notes: NoteName[], when: number, velocity: number, filterBrightness: number): void {
+  private playChord(notes: NoteName[], when: number, velocity: number, filterBrightness: number, pitchBendSemitones: number): void {
     notes.slice(0, 4).forEach((note, index) => {
       this.playTonal(note, when + index * 0.012, velocity * 0.65, {
         type: 'sine',
@@ -262,11 +267,11 @@ export class AudioEngine {
         gain: 0.075,
         filterStart: 1400,
         filterEnd: 760
-      }, filterBrightness);
+      }, filterBrightness, pitchBendSemitones);
     });
   }
 
-  private playArp(notes: NoteName[], when: number, velocity: number, filterBrightness: number): void {
+  private playArp(notes: NoteName[], when: number, velocity: number, filterBrightness: number, pitchBendSemitones: number): void {
     notes.slice(0, 5).forEach((note, index) => {
       this.playTonal(note, when + index * 0.055, velocity * 0.75, {
         type: 'triangle',
@@ -275,7 +280,7 @@ export class AudioEngine {
         gain: 0.105,
         filterStart: 3100,
         filterEnd: 1500
-      }, filterBrightness);
+      }, filterBrightness, pitchBendSemitones);
     });
   }
 
@@ -291,7 +296,8 @@ export class AudioEngine {
       filterStart: number;
       filterEnd: number;
     },
-    filterBrightness: number
+    filterBrightness: number,
+    pitchBendSemitones: number
   ): void {
     if (!this.context || !this.masterGain) {
       return;
@@ -300,14 +306,14 @@ export class AudioEngine {
     const oscillator = this.context.createOscillator();
     const filter = this.context.createBiquadFilter();
     const amp = this.context.createGain();
-    const frequency = this.noteToFrequency(note);
+    const frequency = this.noteToFrequency(note, pitchBendSemitones);
 
     oscillator.type = voice.type;
     oscillator.frequency.setValueAtTime(frequency, when);
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(voice.filterStart * filterBrightness, when);
     filter.frequency.exponentialRampToValueAtTime(Math.max(90, voice.filterEnd * Math.sqrt(filterBrightness)), when + voice.decay);
-    filter.Q.value = 1.1;
+    filter.Q.value = filterBrightness > 1.35 ? 1.65 : filterBrightness < 0.75 ? 0.8 : 1.1;
 
     amp.gain.setValueAtTime(0.0001, when);
     amp.gain.exponentialRampToValueAtTime(voice.gain * velocity, when + voice.attack);
@@ -325,6 +331,13 @@ export class AudioEngine {
       return null;
     }
 
+    const cacheKey = `${this.context.sampleRate}:${duration.toFixed(3)}`;
+    const cachedBuffer = this.noiseBuffers.get(cacheKey);
+
+    if (cachedBuffer) {
+      return cachedBuffer;
+    }
+
     const sampleCount = Math.floor(this.context.sampleRate * duration);
     const buffer = this.context.createBuffer(1, sampleCount, this.context.sampleRate);
     const output = buffer.getChannelData(0);
@@ -333,10 +346,11 @@ export class AudioEngine {
       output[index] = (Math.random() * 2 - 1) * (1 - index / sampleCount);
     }
 
+    this.noiseBuffers.set(cacheKey, buffer);
     return buffer;
   }
 
-  private noteToFrequency(note: NoteName): number {
+  private noteToFrequency(note: NoteName, pitchBendSemitones = 0): number {
     const match = note.match(/^([A-G](?:#|b)?)([1-5])$/);
 
     if (!match) {
@@ -346,7 +360,7 @@ export class AudioEngine {
     const [, pitch, octaveText] = match;
     const octave = Number(octaveText);
     const midi = 12 * (octave + 1) + pitchClass[pitch];
-    return 440 * 2 ** ((midi - 69) / 12);
+    return 440 * 2 ** ((midi + pitchBendSemitones - 69) / 12);
   }
 
   private playUnlockTick(): void {
@@ -355,10 +369,10 @@ export class AudioEngine {
     }
 
     const now = this.context.currentTime;
-    this.playPluck('C4', now, 0.45, 1);
+    this.playPluck('C4', now, 0.45, 1, 0);
   }
 }
 
 function clampBrightness(value: number): number {
-  return Math.min(1.85, Math.max(0.62, value));
+  return Math.min(2.6, Math.max(0.35, value));
 }

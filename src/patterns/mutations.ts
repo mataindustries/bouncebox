@@ -7,6 +7,10 @@ export interface MutationResult {
   summary: string;
 }
 
+export interface MutationOptions {
+  scaleLock?: boolean;
+}
+
 export function clonePattern(pattern: DemoPattern): DemoPattern {
   return {
     ...pattern,
@@ -23,11 +27,12 @@ export function clonePattern(pattern: DemoPattern): DemoPattern {
   };
 }
 
-export function mutatePattern(pattern: DemoPattern, mutationIndex: number): MutationResult {
+export function mutatePattern(pattern: DemoPattern, mutationIndex: number, options: MutationOptions = {}): MutationResult {
   const mutated = clonePattern(pattern);
   mutated.id = `${pattern.id}-mutation-${mutationIndex}`;
   const changedPadIds = new Set<string>();
   const changes: string[] = [];
+  const scaleLock = options.scaleLock ?? true;
 
   if (rotateMelodicPadNotes(mutated, mutationIndex, changedPadIds)) {
     changes.push('notes rotated');
@@ -39,6 +44,10 @@ export function mutatePattern(pattern: DemoPattern, mutationIndex: number): Muta
 
   if (changeOneRole(mutated, mutationIndex, changedPadIds)) {
     changes.push('role flip');
+  }
+
+  if (!scaleLock && chromaticNudgeOnePad(mutated, mutationIndex, changedPadIds)) {
+    changes.push('chromatic nudge');
   }
 
   if (recolorChangedPads(mutated, mutationIndex, changedPadIds)) {
@@ -125,6 +134,24 @@ function changeOneRole(pattern: DemoPattern, mutationIndex: number, changedPadId
   return true;
 }
 
+function chromaticNudgeOnePad(pattern: DemoPattern, mutationIndex: number, changedPadIds: Set<string>): boolean {
+  const candidates = pattern.pads.filter((pad) => !isDrumRole(pad.role));
+
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  const pad = candidates[(mutationIndex + 1) % candidates.length];
+  const direction = mutationIndex % 2 === 0 ? 1 : -1;
+  const notes = (pad.notes?.length ? pad.notes : [pad.note]).map((note) => shiftSemitone(note, direction));
+
+  pad.notes = notes;
+  pad.note = notes[0];
+  pad.label = labelFromPad(pad);
+  changedPadIds.add(pad.id);
+  return true;
+}
+
 function varySeedVelocities(pattern: DemoPattern, mutationIndex: number): boolean {
   if (pattern.seedSteps.length === 0) {
     return false;
@@ -192,6 +219,42 @@ function shiftOctave(note: NoteName, direction: number): NoteName {
   const [, pitch, octaveText] = match;
   const octave = clamp(Number(octaveText) + direction, 1, 5);
   return `${pitch}${octave}` as NoteName;
+}
+
+function shiftSemitone(note: NoteName, direction: number): NoteName {
+  const chromatic = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const match = note.match(/^([A-G](?:#|b)?)([1-5])$/);
+
+  if (!match) {
+    return note;
+  }
+
+  const pitchToIndex: Record<string, number> = {
+    C: 0,
+    'C#': 1,
+    Db: 1,
+    D: 2,
+    'D#': 3,
+    Eb: 3,
+    E: 4,
+    F: 5,
+    'F#': 6,
+    Gb: 6,
+    G: 7,
+    'G#': 8,
+    Ab: 8,
+    A: 9,
+    'A#': 10,
+    Bb: 10,
+    B: 11
+  };
+  const [, pitch, octaveText] = match;
+  const rawIndex = pitchToIndex[pitch] + direction;
+  const octaveShift = rawIndex < 0 ? -1 : rawIndex > 11 ? 1 : 0;
+  const nextPitch = chromatic[(rawIndex + 12) % 12];
+  const nextOctave = clamp(Number(octaveText) + octaveShift, 1, 5);
+
+  return `${nextPitch}${nextOctave}` as NoteName;
 }
 
 function labelFromPad(pad: PadPattern): string {
