@@ -1,6 +1,24 @@
 {
   "name": "bouncebox",
   "version": "0.1.0",
+  "description": "A hardware-inspired physics groovebox where bouncing balls trigger drums, bass, chords, and AI-generated MIDI patterns.",
+  "keywords": [
+    "groovebox",
+    "music",
+    "web-audio",
+    "physics",
+    "matter-js",
+    "midi",
+    "generative-music",
+    "typescript",
+    "vite",
+    "cloudflare-pages"
+  ],
+  "homepage": "https://bouncebox.pages.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mataindustries/bouncebox.git"
+  },
   "private": true,
   "type": "module",
   "scripts": {
